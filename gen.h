@@ -5,6 +5,11 @@
 #if defined(X86_64) || defined(X86_32)
 typedef uint8_t code_word;
 #define RESERVE_WORDS 5 //opcode + 4-byte displacement
+#elif defined(NEW_CORE)
+//no native code generation, byte oriented like the x86 backends so that the
+//architecture independent parts of the backend keep compiling
+typedef uint8_t code_word;
+#define RESERVE_WORDS 5
 #else
 typedef uint32_t code_word;
 #define RESERVE_WORDS 4 //1 push + 1 ldr + 1bx + 1 constant
