@@ -296,7 +296,7 @@ endif
 
 MAINOBJS:=$(COREOBJS) blastem.o $(RENDEROBJS) zip.o  menu.o debug.o gdb_remote.o bindings.o oscilloscope.o
 
-LIBOBJS:=$(COREOBJS) libblastem.o rom.db.o $(LIBZOBJS)
+LIBOBJS:=$(COREOBJS) libblastem.o lib_stubs.o rom.db.o $(LIBZOBJS)
 
 ifdef NONUKLEAR
 CFLAGS+= -DDISABLE_NUKLEAR
@@ -334,7 +334,7 @@ UPD78K2RUNOBJS:=upd78k2.o upd78k2run.o util.o backend.o tern.o
 UPDDISOBJS:=upddis.o upd78k2_dis.o disasm.o tern.o util.o backend.o
 SH2DISOBJS:=sh2dis.o sh2_decode.o disasm.o tern.o util.o backend.o
 
-LIBCFLAGS=$(CFLAGS) -fpic -DIS_LIB -DDISABLE_ZLIB
+LIBCFLAGS=$(CFLAGS) -fpic -DIS_LIB -DDISABLE_ZLIB -DDISABLE_NUKLEAR
 
 all : $(ALL)
 

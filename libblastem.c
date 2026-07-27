@@ -3,6 +3,7 @@
 #include "libretro.h"
 #include "system.h"
 #include "util.h"
+#include "paths.h"
 #include "vdp.h"
 #include "render.h"
 #include "io.h"

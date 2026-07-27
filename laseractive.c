@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include "laseractive.h"
 #include "io.h"

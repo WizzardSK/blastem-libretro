@@ -1,3 +1,4 @@
+#include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "32x_video.h"
