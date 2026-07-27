@@ -3,12 +3,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "zlib/zlib.h"
+#include "png.h"
 
 static const char png_magic[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
 static const char ihdr[] = {'I', 'H', 'D', 'R'};
 static const char plte[] = {'P', 'L', 'T', 'E'};
 static const char idat[] = {'I', 'D', 'A', 'T'};
 static const char iend[] = {'I', 'E', 'N', 'D'};
+static const char actl[] = {'a', 'c', 'T', 'L'};
+static const char fctl[] = {'f', 'c', 'T', 'L'};
+static const char fdat[] = {'f', 'd', 'A', 'T'};
 
 enum {
 	COLOR_GRAY,
@@ -56,50 +60,126 @@ static void write_header(FILE *f, uint32_t width, uint32_t height, uint8_t color
 	write_chunk(f, ihdr, chunk, sizeof(chunk));
 }
 
-void save_png24(FILE *f, uint32_t *buffer, uint32_t width, uint32_t height, uint32_t pitch)
+void save_png24_frame(FILE *f, pixel_t *buffer, apng_state *apng, uint32_t width, uint32_t height, uint32_t pitch)
 {
 	uint32_t idat_size = (1 + width*3) * height;
 	uint8_t *idat_buffer = malloc(idat_size);
-	uint32_t *pixel = buffer;
+	pixel_t *pixel = buffer;
 	uint8_t *cur = idat_buffer;
 	for (uint32_t y = 0; y < height; y++)
 	{
 		//save filter type
 		*(cur++) = 0;
-		uint32_t *start = pixel;
+		pixel_t *start = pixel;
 		for (uint32_t x = 0; x < width; x++, pixel++)
 		{
-			uint32_t value = *pixel;
+			pixel_t value = *pixel;
+#ifdef USE_RGB565
+			*(cur++) = (value >> 8 & 0xF8) | (value >> (8+5));
+			*(cur++) = (value >> 3 & 0xFC) | (value >> (3+5) & 0x3);
+			*(cur++) = value << 3 | (value >> (5-3) & 0x3);
+#else
+#ifdef USE_GLES
+			*(cur++) = value;
+			*(cur++) = value >> 8;
+			*(cur++) = value >> 16;
+#else
 			*(cur++) = value >> 16;
 			*(cur++) = value >> 8;
 			*(cur++) = value;
+#endif
+#endif
 		}
-		pixel = start + pitch / sizeof(uint32_t);
+		pixel = start + pitch / sizeof(pixel_t);
 	}
-	write_header(f, width, height, COLOR_TRUE);
+	
 	uLongf compress_buffer_size = idat_size + 5 * (idat_size/16383 + 1) + 3;
+	uint32_t offset = 0;
+	if (apng) {
+		uint8_t chunk[26] = {
+			apng->sequence_number >> 24, apng->sequence_number >> 16,
+			apng->sequence_number >> 8, apng->sequence_number,
+			width >> 24, width >> 16, width >> 8, width,
+			height >> 24, height >> 16, height >> 8, height,
+			0, 0, 0, 0, //x offset
+			0, 0, 0, 0, //y offset
+			apng->delay_num >> 8, apng->delay_num,
+			apng->delay_den >> 8, apng->delay_den,
+			0, 0 //dispose and blend ops
+		};
+		write_chunk(f, fctl, chunk, sizeof(chunk));
+		apng->sequence_number++;
+		apng->num_frames++;
+		if (apng->sequence_number > 1) {
+			offset = sizeof(uint32_t);
+			compress_buffer_size += offset;
+		}
+	}
 	uint8_t *compressed = malloc(compress_buffer_size);
-	compress(compressed, &compress_buffer_size, idat_buffer, idat_size);
+	compress_buffer_size -= offset;
+	compress(compressed + offset, &compress_buffer_size, idat_buffer, idat_size);
 	free(idat_buffer);
-	write_chunk(f, idat, compressed, compress_buffer_size);
-	write_chunk(f, iend, NULL, 0);
+	if (offset) {
+		cur = compressed;
+		*(cur++) = apng->sequence_number >> 24;
+		*(cur++) = apng->sequence_number >> 16;
+		*(cur++) = apng->sequence_number >> 8;
+		*(cur++) = apng->sequence_number;
+		apng->sequence_number++;
+	}
+	write_chunk(f, offset ? fdat : idat, compressed, compress_buffer_size + offset);
 	free(compressed);
 }
 
-void save_png(FILE *f, uint32_t *buffer, uint32_t width, uint32_t height, uint32_t pitch)
+apng_state* start_apng(FILE *f, uint32_t width, uint32_t height, float frame_rate)
 {
-	uint32_t palette[256];
+	write_header(f, width, height, COLOR_TRUE);
+	apng_state *apng = calloc(1, sizeof(apng_state));
+	uint8_t chunk[] = {
+		0, 0, 0, 0,
+		0, 0, 0, 1
+	};
+	apng->num_frame_offset = ftell(f) + 8;
+	write_chunk(f, actl, chunk, sizeof(chunk));
+	apng->delay_num = 65535.0f / frame_rate;
+	apng->delay_den = frame_rate * apng->delay_num;
+	return apng;
+}
+
+void end_apng(FILE *f, apng_state *apng)
+{
+	write_chunk(f, iend, NULL, 0);
+	fseek(f, apng->num_frame_offset, SEEK_SET);
+	uint8_t bytes[] = {
+		apng->num_frames >> 24, apng->num_frames >> 16, 
+		apng->num_frames >> 8, apng->num_frames
+	};
+	fwrite(bytes, 1, sizeof(bytes), f);
+	fclose(f);
+	free(apng);
+}
+
+void save_png24(FILE *f, pixel_t *buffer, uint32_t width, uint32_t height, uint32_t pitch)
+{
+	write_header(f, width, height, COLOR_TRUE);
+	save_png24_frame(f, buffer, NULL, width, height, pitch);
+	write_chunk(f, iend, NULL, 0);
+}
+
+void save_png(FILE *f, pixel_t *buffer, uint32_t width, uint32_t height, uint32_t pitch)
+{
+	pixel_t palette[256];
 	uint8_t pal_buffer[256*3];
 	uint32_t num_pal = 0;
 	uint32_t index_size = (1 + width) * height;
 	uint8_t *index_buffer = malloc(index_size);
 	uint8_t *cur = index_buffer;
-	uint32_t *pixel = buffer;
+	pixel_t *pixel = buffer;
 	for (uint32_t y = 0; y < height; y++)
 	{
 		//save filter type
 		*(cur++) = 0;
-		uint32_t *start = pixel;
+		pixel_t *start = pixel;
 		for (uint32_t x = 0; x < width; x++, pixel++, cur++)
 		{
 			uint32_t value = (*pixel) & 0xFFFFFF;
@@ -121,15 +201,27 @@ void save_png(FILE *f, uint32_t *buffer, uint32_t width, uint32_t height, uint32
 			}
 			*cur = i;
 		}
-		pixel = start + pitch / sizeof(uint32_t);
+		pixel = start + pitch / sizeof(pixel_t);
 	}
 	write_header(f, width, height, COLOR_INDEXED);
 	cur = pal_buffer;
 	for (uint32_t i = 0; i < num_pal; i++)
 	{
+#ifdef USE_RGB565
+		*(cur++) = (palette[i] >> 8 & 0xF8) | (palette[i] >> (8+5));
+		*(cur++) = (palette[i] >> 3 & 0xFC) | (palette[i] >> (3+5) & 0x3);
+		*(cur++) = palette[i] << 3 | (palette[i] >> (5-3) & 0x3);
+#else
+#ifdef USE_GLES
+		*(cur++) = palette[i];
+		*(cur++) = palette[i] >> 8;
+		*(cur++) = palette[i] >> 16;
+#else
 		*(cur++) = palette[i] >> 16;
 		*(cur++) = palette[i] >> 8;
 		*(cur++) = palette[i];
+#endif
+#endif
 	}
 	write_chunk(f, plte, pal_buffer, num_pal * 3);
 	uLongf compress_buffer_size = index_size + 5 * (index_size/16383 + 1) + 3;
@@ -269,7 +361,7 @@ static uint32_t pixel_true_alpha(uint8_t **cur, uint8_t **last, uint8_t bpp, uin
 	if (*last) {
 		(*last)++;
 	}
-	return alpha << 24 | red << 16 | green << 8 | blue;
+	return ((uint32_t)alpha) << 24 | red << 16 | green << 8 | blue;
 }
 
 static filter_fun filters[] = {filter_none, filter_sub, filter_up, filter_avg, filter_paeth};

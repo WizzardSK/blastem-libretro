@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <stdint.h>
-#include <stdarg.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -11,26 +10,57 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#define info_puts(msg) __android_log_write(ANDROID_LOG_INFO, "BlastEm", msg)
-#define warning_puts(msg) __android_log_write(ANDROID_LOG_WARN, "BlastEm", msg)
-#define fatal_puts(msg) __android_log_write(ANDROID_LOG_FATAL, "BlastEm", msg)
+#include <SDL_system.h>
+#include <jni.h>
 
-#define info_printf(msg, args) __android_log_vprint(ANDROID_LOG_INFO, "BlastEm", msg, args)
-#define warning_printf(msg, args) __android_log_vprint(ANDROID_LOG_WARN, "BlastEm", msg, args)
-#define fatal_printf(msg, args) __android_log_vprint(ANDROID_LOG_FATAL, "BlastEm", msg, args)
+android_LogPriority log_level_to_android(log_level)
+{
+	switch (log_level)
+	{
+	case DEBUG: return ANDROID_LOG_DEBUG;
+	case INFO: ANDROID_LOG_INFO;
+	case WARN: ANDROID_LOG_WARN;
+	case FATAL: ANDROID_LOG_FATAL;
+	}
+}
+
+#define log_puts(stream, msg, level) __android_log_write(log_level_to_android(level), "BlastEm", msg)
+#define log_printf(sream, format, level, args) __android_log_vprint(log_level_to_android(level), "BlastEm", msg, args)
+
 #else
-#define info_puts(msg) fputs(msg, stdout);
-#define warning_puts(msg) fputs(msg, stderr);
-#define fatal_puts(msg) fputs(msg, stderr);
 
-#define info_printf(msg, args) vprintf(msg, args)
-#define warning_printf(msg, args) vfprintf(stderr, msg, args)
-#define fatal_printf(msg, args) vfprintf(stderr, msg, args)
+#define log_puts(stream, msg, level) fputs(msg, stream);
+#define log_printf(stream, format, level, args) vfprintf(stream, format, args)
+
 #endif
 
-#include "blastem.h" //for headless global
-#include "render.h" //for render_errorbox
 #include "util.h"
+
+void *aligned_calloc(size_t nmemb, size_t size, size_t align)
+{
+#ifdef __EMSCRIPTEN__
+	return calloc(nmemb, size);
+#else
+	uint8_t *ret = calloc(1, nmemb * size + align);
+	ret += align - (((intptr_t)ret) & (align - 1));
+	ret[-1] = (uint8_t)align;
+	return ret;
+#endif
+}
+
+void aligned_free(void *ptr)
+{
+#ifdef __EMSCRIPTEN__
+	free(ptr);
+#else
+	if (!ptr) {
+		return;
+	}
+	uint8_t *buf = ptr;
+	buf -= buf[-1];
+	free(buf);
+#endif
+}
 
 char * alloc_concat(char const * first, char const * second)
 {
@@ -53,6 +83,26 @@ char * alloc_concat_m(int num_parts, char const ** parts)
 	for (int i = 0; i < num_parts; i++) {
 		strcat(ret, parts[i]);
 	}
+	return ret;
+}
+
+char * alloc_join(int num_parts, char const **parts, char sep)
+{
+	int total = num_parts ? num_parts - 1 : 0;
+	for (int i = 0; i < num_parts; i++) {
+		total += strlen(parts[i]);
+	}
+	char * ret = malloc(total + 1);
+	char *cur = ret;
+	for (int i = 0; i < num_parts; i++) {
+		size_t s = strlen(parts[i]);
+		if (i) {
+			*(cur++) = sep;
+		}
+		memcpy(cur, parts[i], s);
+		cur += s;
+	}
+	*cur = 0;
 	return ret;
 }
 
@@ -243,7 +293,7 @@ char *utf16be_to_utf8(uint8_t *buf, uint32_t max_size)
 			*(cur_out++) = 0x80 | (code & 0x3F);
 		} else {
 			//TODO: Deal with surrogate pairs
-			*(cur_out++) = 0xF0 | code >> 12;
+			*(cur_out++) = 0xE0 | code >> 12;
 			*(cur_out++) = 0x80 | (code >> 6 & 0x3F);
 			*(cur_out++) = 0x80 | (code & 0x3F);
 		}
@@ -284,111 +334,97 @@ int utf8_codepoint(const char **text)
 		value |= (**text) & 0x3F;
 		(*text)++;
 	}
-	return value + base;
-}
-
-char is_path_sep(char c)
-{
-#ifdef _WIN32
-	if (c == '\\') {
-		return 1;
-	}
-#endif
-	return c == '/';
-}
-
-char is_absolute_path(char *path)
-{
-#ifdef _WIN32
-	if (path[1] == ':' && is_path_sep(path[2]) && isalpha(path[0])) {
-		return 1;
-	}
-#endif
-	return is_path_sep(path[0]);
-}
-
-char * basename_no_extension(const char *path)
-{
-	const char *lastdot = NULL;
-	const char *lastslash = NULL;
-	const char *cur;
-	for (cur = path; *cur; cur++)
-	{
-		if (*cur == '.') {
-			lastdot = cur;
-		} else if (is_path_sep(*cur)) {
-			lastslash = cur + 1;
-		}
-	}
-	if (!lastdot) {
-		lastdot = cur;
-	}
-	if (!lastslash) {
-		lastslash = path;
-	}
-	char *barename = malloc(lastdot-lastslash+1);
-	memcpy(barename, lastslash, lastdot-lastslash);
-	barename[lastdot-lastslash] = 0;
-	
-	return barename;
-}
-
-char *path_extension(char const *path)
-{
-	char const *lastdot = NULL;
-	char const *lastslash = NULL;
-	char const *cur;
-	for (cur = path; *cur; cur++)
-	{
-		if (*cur == '.') {
-			lastdot = cur;
-		} else if (is_path_sep(*cur)) {
-			lastslash = cur + 1;
-		}
-	}
-	if (!lastdot || (lastslash && lastslash > lastdot)) {
-		//no extension
-		return NULL;
-	}
-	return strdup(lastdot+1);
-}
-
-uint8_t path_matches_extensions(char *path, char **ext_list, uint32_t num_exts)
-{
-	char *ext = path_extension(path);
-	if (!ext) {
+	if (value < base) {
 		return 0;
 	}
-	uint32_t extidx;
-	for (extidx = 0; extidx < num_exts; extidx++)
-	{
-		if (!strcasecmp(ext, ext_list[extidx])) {
-			free(ext);
-			return 1;
-		}
-	}
-	free(ext);
-	return 0;
+	return value;
 }
 
-char * path_dirname(const char *path)
+wchar_t *utf8_to_utf16(const char *text)
 {
-	const char *lastslash = NULL;
-	const char *cur;
-	for (cur = path; *cur; cur++)
+	const char *cur = text;
+	size_t utf16_code_units = 0;
+	while (*cur)
 	{
-		if (is_path_sep(*cur)) {
-			lastslash = cur;
+		int codepoint = utf8_codepoint(&cur);
+		utf16_code_units += codepoint >= 0x10000 ? 2 : 1;
+		
+	}
+	wchar_t *out = calloc(utf16_code_units + 1, sizeof(wchar_t));
+	wchar_t *cur_out = out;
+	cur = text;
+	while (*cur)
+	{
+		int codepoint = utf8_codepoint(&cur);
+		if (codepoint < 0x10000) {
+			*(cur_out++) = codepoint;
+		} else {
+			codepoint -= 0x10000;
+			*(cur_out++) = 0xD800 | codepoint >> 10;
+			*(cur_out++) = 0xDC00 | (codepoint & 0x3FF);
 		}
 	}
-	if (!lastslash) {
-		return NULL;
+	return out;
+}
+
+char *utf16_to_utf8(const wchar_t *text)
+{
+	size_t utf8_bytes = 0;
+	for (const uint16_t *cur = (const uint16_t *)text; *cur; cur++)
+	{
+		int codepoint;
+		if (*cur < 0xD800 || *cur >= 0xE000) {
+			codepoint = *cur;
+		} else if (*cur < 0xDC00 && cur[1] >= 0xDD00 && cur[1] < 0xE000) {
+			//valid surrogate pair
+			codepoint = 0x10000 | (*cur & 0x3FF) << 10 | (cur[1] & 0x3FF);
+			cur++;
+		} else {
+			//take the wtf8 approach
+			codepoint = *cur;
+		}
+		if (codepoint < 0x80) {
+			utf8_bytes += 1;
+		} else if (codepoint < 0x800) {
+			utf8_bytes += 2;
+		} else if (codepoint < 0x10000) {
+			utf8_bytes += 3;
+		} else {
+			utf8_bytes += 4;
+		}
 	}
-	char *dir = malloc(lastslash-path+1);
-	memcpy(dir, path, lastslash-path);
-	dir[lastslash-path] = 0;
-	
-	return dir;
+	char *out = calloc(utf8_bytes + 1, 1);
+	char *cur_out = out;
+	for (const uint16_t *cur = (const uint16_t *)text; *cur; cur++)
+	{
+		int codepoint;
+		if (*cur < 0xD800 || *cur >= 0xE000) {
+			codepoint = *cur;
+		} else if (*cur < 0xDC00 && cur[1] >= 0xDD00 && cur[1] < 0xE000) {
+			//valid surrogate pair
+			codepoint = 0x10000 | (*cur & 0x3FF) << 10 | (cur[1] & 0x3FF);
+			cur++;
+		} else {
+			//take the wtf8 approach
+			codepoint = *cur;
+		}
+		if (codepoint < 0x80) {
+			*(cur_out++) = codepoint;
+		} else if (codepoint < 0x800) {
+			*(cur_out++) = 0xC0 | codepoint >> 6;
+			*(cur_out++) = 0x80 | (codepoint & 0x3F);
+		} else if (codepoint < 0x10000) {
+			*(cur_out++) = 0xE0 | codepoint >> 12;
+			*(cur_out++) = 0x80 | (codepoint >> 6 & 0x3F);
+			*(cur_out++) = 0x80 | (codepoint & 0x3F);
+		} else {
+			*(cur_out++) = 0xF0 | codepoint >> 18;
+			*(cur_out++) = 0x80 | (codepoint >> 12 & 0x3F);
+			*(cur_out++) = 0x80 | (codepoint >> 6 & 0x3F);
+			*(cur_out++) = 0x80 | (codepoint & 0x3F);
+		}
+	}
+	return out;
 }
 
 uint32_t nearest_pow2(uint32_t val)
@@ -401,22 +437,19 @@ uint32_t nearest_pow2(uint32_t val)
 	return ret;
 }
 
-static char * exe_str;
-
-void set_exe_str(char * str)
+static uint8_t output_enabled = 1;
+static log_fun log_handler;
+void log_msg(char *format, log_level level, va_list args)
 {
-	exe_str = str;
-}
-
-void fatal_error(char *format, ...)
-{
-	va_list args;
-	va_start(args, format);
-	if (!headless) {
+	FILE *stream = level >= WARN ? stderr : stdout;
+	if (log_handler) {
 		//take a guess at the final size
 		int32_t size = strlen(format) * 2;
 		char *buf = malloc(size);
-		int32_t actual = vsnprintf(buf, size, format, args);
+		va_list tmp;
+		va_copy(tmp, args);
+		int32_t actual = vsnprintf(buf, size, format, tmp);
+		va_end(tmp);
 		if (actual >= size || actual < 0) {
 			if (actual < 0) {
 				//seems on windows, vsnprintf is returning -1 when the buffer is too small
@@ -427,96 +460,39 @@ void fatal_error(char *format, ...)
 			}
 			free(buf);
 			buf = malloc(actual);
-			va_end(args);
-			va_start(args, format);
 			vsnprintf(buf, actual, format, args);
 		}
-		fatal_puts(buf);
-		render_errorbox("Fatal Error", buf);
+		if (output_enabled || level >= WARN) {
+			log_puts(stream, buf, log_level);
+		}
+		log_handler(level, buf);
 		free(buf);
-	} else {
-		fatal_printf(format, args);
+	} else if (output_enabled || level >= WARN) {
+		log_printf(stream, format, log_level, args);
 	}
+}
+void fatal_error(char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	log_msg(format, FATAL, args);
 	va_end(args);
 	exit(1);
 }
-
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 
 void warning(char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
-#ifndef _WIN32
-	if (headless || (isatty(STDERR_FILENO) && isatty(STDIN_FILENO))) {
-		warning_printf(format, args);
-	} else {
-#endif
-		int32_t size = strlen(format) * 2;
-		char *buf = malloc(size);
-		int32_t actual = vsnprintf(buf, size, format, args);
-		if (actual >= size || actual < 0) {
-			if (actual < 0) {
-				//seems on windows, vsnprintf is returning -1 when the buffer is too small
-				//since we don't know the proper size, a generous multiplier will hopefully suffice
-				actual = size * 4;
-			} else {
-				actual++;
-			}
-			free(buf);
-			buf = malloc(actual);
-			va_end(args);
-			va_start(args, format);
-			vsnprintf(buf, actual, format, args);
-		}
-		warning_puts(buf);
-		render_infobox("BlastEm Info", buf);
-		free(buf);
-#ifndef _WIN32
-	}
-#endif
+	log_msg(format, WARN, args);
 	va_end(args);
 }
 
-static uint8_t output_enabled = 1;
 void info_message(char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
-#ifndef _WIN32
-	if (headless || (isatty(STDOUT_FILENO) && isatty(STDIN_FILENO))) {
-		if (output_enabled) {
-			info_printf(format, args);
-		}
-	} else {
-#endif
-		int32_t size = strlen(format) * 2;
-		char *buf = malloc(size);
-		int32_t actual = vsnprintf(buf, size, format, args);
-		if (actual >= size || actual < 0) {
-			if (actual < 0) {
-				//seems on windows, vsnprintf is returning -1 when the buffer is too small
-				//since we don't know the proper size, a generous multiplier will hopefully suffice
-				actual = size * 4;
-			} else {
-				actual++;
-			}
-			free(buf);
-			buf = malloc(actual);
-			va_end(args);
-			va_start(args, format);
-			vsnprintf(buf, actual, format, args);
-		}
-		if (output_enabled) {
-			info_puts(buf);
-		}
-		render_infobox("BlastEm Info", buf);
-		free(buf);
-#ifndef _WIN32
-	}
-#endif
+	log_msg(format, INFO, args);
 	va_end(args);
 }
 
@@ -524,9 +500,8 @@ void debug_message(char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
-	if (output_enabled) {
-		info_printf(format, args);
-	}
+	log_msg(format, DEBUG, args);
+	va_end(args);
 }
 
 void disable_stdout_messages(void)
@@ -539,34 +514,136 @@ uint8_t is_stdout_enabled(void)
 	return output_enabled;
 }
 
-#ifdef _WIN32
-#define WINVER 0x501
-#include <winsock2.h>
-#include <windows.h>
-#include <shlobj.h>
-
-char * get_home_dir()
+void register_log_handler(log_fun handler)
 {
-	static char path[MAX_PATH];
-	SHGetFolderPathA(NULL, CSIDL_PROFILE, NULL, 0, path);
-	return path;
+	log_handler = handler;
 }
 
-char * get_exe_dir()
-{
-	static char path[MAX_PATH];
-	HMODULE module = GetModuleHandleA(NULL);
-	GetModuleFileNameA(module, path, MAX_PATH);
+#ifdef _WIN32
+#define WINVER 0x501
+#include <windows.h>
 
-	int pathsize = strlen(path);
-	for(char * cur = path + pathsize - 1; cur != path; cur--)
+static void fix_slashes(wchar_t *path)
+{
+	for (; *path; path++)
 	{
-		if (*cur == '\\') {
-			*cur = 0;
-			break;
+		if (*path == L'/') {
+			*path = L'\\';
 		}
 	}
-	return path;
+}
+
+wchar_t *to_windows_path(const char *path)
+{
+	char *tmp = NULL;
+	uint8_t need_working = 0;
+	if (!startswith(path, "\\\\?\\")) {
+		if ((path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/')) {
+			//absolute UNC path
+			tmp = alloc_concat("\\\\?\\UNC", path + 1);
+		} else if (isalpha(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
+			//full absolute path with drive letter
+			tmp = alloc_concat("\\\\?\\", path);
+			path = tmp;
+		} else {
+			need_working = 1;
+		}
+	}
+	wchar_t *widepath = utf8_to_utf16(path);
+	free(tmp);
+	fix_slashes(widepath);
+	DWORD unc_length = 0;
+	if (need_working) {
+		DWORD res = GetCurrentDirectoryW(0, NULL);
+		if (!res) {
+			return widepath;
+		}
+		wchar_t *working = calloc(sizeof(wchar_t), res);
+		res = GetCurrentDirectoryW(res, working);
+		if (res) {
+			size_t rel_len = wcslen(widepath);
+			if (widepath[0] == L'\\') {
+				//path is relative to current drive root rather than current directory
+				//truncate the 
+				if (working[0] == L'\\') {
+					//current drive is a network share
+					uint8_t found_server_share_sep = 0;
+					for (DWORD i = 2; i < res; i++)
+					{
+						if (working[i] == L'\\') {
+							if (found_server_share_sep) {
+								unc_length = res = i;
+								break;
+							} else {
+								found_server_share_sep = 1;
+							}
+						}
+					}
+				} else {
+					res = 3;
+				}
+			}
+			wchar_t *final = calloc(sizeof(wchar_t), res + rel_len + 6);
+			final[0] = L'\\';
+			final[1] = L'\\';
+			final[2] = L'?';
+			final[3] = L'\\';
+			memcpy(final + 4, working, sizeof(*working) * res);
+			if (final[3 + res] != L'\\') {
+				final[4 + res] = L'\\';
+				res++;
+			}
+			if (*widepath == L'\\') {
+				res--;
+			}
+			memcpy(final + 4 + res, widepath, sizeof(*widepath) * (rel_len + 1));
+			free(widepath);
+			widepath = final;
+		}
+		free(working);
+	}
+	// the \\?\ prefix disables processing of .. and . so we need to do it manually
+	//portion of the path after drive specification
+	wchar_t *dir_start = widepath + (unc_length ? unc_length : 6);
+	uint8_t last_was_sep = 0;
+	for (wchar_t *cur = dir_start; *cur; cur++)
+	{
+		if (*cur == L'\\') {
+			last_was_sep = 1;
+		} else if (last_was_sep && *cur == L'.') {
+			if (cur[1] == L'.' && cur[2] == L'\\') {
+				//.. -> remove the last path component
+				wchar_t *src = cur + 2;
+				cur -= 2;
+				for(; cur > dir_start; --cur)
+				{
+					if (*cur == L'\\') {
+						break;
+					}
+				}
+				memmove(cur, src, sizeof(wchar_t) * (wcslen(src) + 1));
+			} else if (cur[1] == L'\\') {
+				//. -> just remove this path component
+				cur--;
+				memmove(cur, cur + 2, sizeof(wchar_t) * (wcslen(cur + 2) + 1));
+			} else {
+				last_was_sep = 0;
+			}
+		} else {
+			last_was_sep = 0;
+		}
+	}
+	return widepath;
+}
+
+FILE *fopen_utf8(const char *path, const char *mode)
+{
+	wchar_t *widepath = to_windows_path(path);
+	wchar_t *widemode = utf8_to_utf16(mode);
+	FILE *ret = _wfopen(widepath, widemode);
+	free(widepath);
+	free(widemode);
+	return ret;
 }
 
 dir_entry *get_dir_list(char *path, size_t *numret)
@@ -600,37 +677,46 @@ dir_entry *get_dir_list(char *path, size_t *numret)
 		}
 	} else {
 		HANDLE dir;
-		WIN32_FIND_DATA file;
-		char *pattern = alloc_concat(path, "/*.*");
-		dir = FindFirstFile(pattern, &file);
+		WIN32_FIND_DATAW file;
+		char *pattern;
+		if (startswith(path, "\\\\?\\")) {
+			pattern = alloc_concat(path, "\\*.*");
+		} else {
+			const char *parts[] = {"\\\\?\\", path, "\\*.*"};
+			pattern = alloc_concat_m(3, parts);
+		}
+		wchar_t *wide_pattern = utf8_to_utf16(pattern);
+		fix_slashes(wide_pattern);
+		dir = FindFirstFileW(wide_pattern, &file);
 		free(pattern);
+		free(wide_pattern);
 		if (dir == INVALID_HANDLE_VALUE) {
 			if (numret) {
 				*numret = 0;
 			}
 			return NULL;
 		}
-		
+
 		size_t storage = 64;
 		ret = malloc(sizeof(dir_entry) * storage);
 		size_t pos = 0;
-		
+
 		if (path[1] == ':' && (!path[2] || (path[2] == PATH_SEP[0] && !path[3]))) {
 			//we are in the root of a drive, add a virtual .. entry
 			//for navigating to the virtual root directory
 			ret[pos].name = strdup("..");
 			ret[pos++].is_dir = 1;
 		}
-		
+
 		do {
 			if (pos == storage) {
 				storage = storage * 2;
 				ret = realloc(ret, sizeof(dir_entry) * storage);
 			}
-			ret[pos].name = strdup(file.cFileName);
+			ret[pos].name = utf16_to_utf8(file.cFileName);
 			ret[pos++].is_dir = (file.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-		} while (FindNextFile(dir, &file));
-		
+		} while (FindNextFileW(dir, &file));
+
 		FindClose(dir);
 		if (numret) {
 			*numret = pos;
@@ -642,8 +728,10 @@ dir_entry *get_dir_list(char *path, size_t *numret)
 time_t get_modification_time(char *path)
 {
 	HANDLE results;
-	WIN32_FIND_DATA file;
-	results = FindFirstFile(path, &file);
+	WIN32_FIND_DATAW file;
+	wchar_t *widepath = to_windows_path(path);
+	results = FindFirstFileW(widepath, &file);
+	free(widepath);
 	if (results == INVALID_HANDLE_VALUE) {
 		return 0;
 	}
@@ -656,9 +744,9 @@ time_t get_modification_time(char *path)
 	return (time_t)wintime;
 }
 
-int ensure_dir_exists(const char *path)
+static int ensure_dir_exists_wide(const wchar_t *widepath)
 {
-	if (CreateDirectory(path, NULL)) {
+	if (CreateDirectoryW(widepath, NULL)) {
 		return 1;
 	}
 	if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -668,106 +756,98 @@ int ensure_dir_exists(const char *path)
 		warning("CreateDirectory failed with unexpected error code %X\n", GetLastError());
 		return 0;
 	}
-	char *parent = strdup(path);
-	//Windows technically supports both native and Unix-style path separators
-	//so search for both
-	char *sep = strrchr(parent, '\\');
-	char *osep = strrchr(parent, '/');
-	if (osep && (!sep || osep > sep)) {
-		sep = osep;
-	}
+	wchar_t *parent = _wcsdup(widepath);
+	wchar_t *sep = wcsrchr(parent, '\\');
+	int ret;
 	if (!sep || sep == parent) {
 		//relative path, but for some reason we failed
-		return 0;
+		ret = 0;
+		goto done;
 	}
 	*sep = 0;
-	if (!ensure_dir_exists(parent)) {
-		free(parent);
-		return 0;
+	if (!ensure_dir_exists_wide(parent)) {
+		ret = 0;
+		goto done;
 	}
+	ret = CreateDirectoryW(widepath, NULL);
+done:
 	free(parent);
-	return CreateDirectory(path, NULL);
+	return ret;
 }
 
-static WSADATA wsa_data;
-static void socket_cleanup(void)
+int ensure_dir_exists(const char *path)
 {
-	WSACleanup();
+	wchar_t *widepath = to_windows_path(path);
+	return ensure_dir_exists_wide(widepath);
 }
 
-void socket_init(void)
-{
-	static uint8_t started;
-	if (!started) {
-		started = 1;
-		WSAStartup(MAKEWORD(2,2), &wsa_data);
-		atexit(socket_cleanup);
-	}
-}
+typedef struct {
+	HANDLE           request_event;
+	HANDLE           reply_event;
+	CRITICAL_SECTION lock;
+	FILE             *f;
+	char             *dst;
+	size_t           size;
+} stdio_timeout_state;
 
-int socket_blocking(int sock, int should_block)
+static DWORD WINAPI stdio_timeout_thread(LPVOID param)
 {
-	u_long param = !should_block;
-	if (ioctlsocket(sock, FIONBIO, &param)) {
-		return WSAGetLastError();
-	}
+	stdio_timeout_state *state = param;
+	EnterCriticalSection(&state->lock);
+		for(;;)
+		{
+			while (!state->f)
+			{
+				LeaveCriticalSection(&state->lock);
+				WaitForSingleObject(state->request_event, INFINITE);
+				EnterCriticalSection(&state->lock);
+			}
+			char *dst = state->dst;
+			size_t size = state->size;
+			FILE *f = state->f;
+			LeaveCriticalSection(&state->lock);
+			dst = fgets(dst, size, f);
+			EnterCriticalSection(&state->lock);
+			state->dst = dst;
+			state->f = NULL;
+			SetEvent(&state->reply_event);
+		}
+	LeaveCriticalSection(&state->lock);
+	
 	return 0;
 }
 
-void socket_close(int sock)
+char *fgets_timeout(char *dst, size_t size, FILE *f, uint64_t timeout_usec, void (*timeout_cb)(void))
 {
-	closesocket(sock);
-}
-
-int socket_last_error(void)
-{
-	return WSAGetLastError();
-}
-
-int socket_error_is_wouldblock(void)
-{
-	return WSAGetLastError() == WSAEWOULDBLOCK;
+	static HANDLE workerThread;
+	static stdio_timeout_state state;
+	if (!workerThread) {
+		InitializeCriticalSection(&state.lock);
+		state.request_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+		state.reply_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+		workerThread = CreateThread(NULL, 64 * 1024, stdio_timeout_thread, &state, 0, NULL);
+	}
+	EnterCriticalSection(&state.lock);
+		state.f = f;
+		state.dst = dst;
+		state.size = size;
+		SetEvent(state.request_event);
+		while (state.f)
+		{
+			LeaveCriticalSection(&state.lock);
+			WaitForSingleObject(state.reply_event, timeout_usec / 1000);
+			EnterCriticalSection(&state.lock);
+			if (state.f) {
+				timeout_cb();
+			}
+		}
+	LeaveCriticalSection(&state.lock);
+	return state.dst;
 }
 
 #else
 #include <fcntl.h>
-#include <signal.h>
-
-void socket_init(void)
-{
-	//SIGPIPE on network sockets is not desired
-	//would be better to do this in a more limited way,
-	//but the alternatives are not portable
-	signal(SIGPIPE, SIG_IGN);
-}
-
-int socket_blocking(int sock, int should_block)
-{
-	if (fcntl(sock, F_SETFL, should_block ? 0 : O_NONBLOCK)) {
-		return errno;
-	}
-	return 0;
-}
-
-void socket_close(int sock)
-{
-	close(sock);
-}
-
-int socket_last_error(void)
-{
-	return errno;
-}
-
-int socket_error_is_wouldblock(void)
-{
-	return errno == EAGAIN || errno == EWOULDBLOCK;
-}
-
-char * get_home_dir()
-{
-	return getenv("HOME");
-}
+#include <unistd.h>
 
 char * readlink_alloc(char * path)
 {
@@ -793,53 +873,84 @@ char * readlink_alloc(char * path)
 	return linktext;
 }
 
-char * get_exe_dir()
+char *fgets_timeout(char *dst, size_t size, FILE *f, uint64_t timeout_usec, void (*timeout_cb)(void))
 {
-	static char * exe_dir;
-	if (!exe_dir) {
-		char * cur;
-#ifdef HAS_PROC
-		char * linktext = readlink_alloc("/proc/self/exe");
-		if (!linktext) {
-			goto fallback;
-		}
-		int linksize = strlen(linktext);
-		for(cur = linktext + linksize - 1; cur != linktext; cur--)
-		{
-			if (is_path_sep(*cur)) {
-				*cur = 0;
-				break;
-			}
-		}
-		if (cur == linktext) {
-			free(linktext);
-fallback:
-#endif
-			if (!exe_str) {
-				fputs("/proc/self/exe is not available and set_exe_str was not called!", stderr);
-			}
-			int pathsize = strlen(exe_str);
-			for(cur = exe_str + pathsize - 1; cur != exe_str; cur--)
-			{
-				if (is_path_sep(*cur)) {
-					exe_dir = malloc(cur-exe_str+1);
-					memcpy(exe_dir, exe_str, cur-exe_str);
-					exe_dir[cur-exe_str] = 0;
-					break;
-				}
-			}
-#ifdef HAS_PROC
+	int wait = 1;
+	fd_set read_fds;
+	FD_ZERO(&read_fds);
+	struct timeval timeout;
+	do {
+		timeout.tv_sec = timeout_usec / 1000000;
+		timeout.tv_usec = timeout_usec % 1000000;
+		FD_SET(fileno(stdin), &read_fds);
+		if(select(fileno(stdin) + 1, &read_fds, NULL, NULL, &timeout) >= 1) {
+			wait = 0;
 		} else {
-			exe_dir = linktext;
+			timeout_cb();
 		}
-#endif
-	}
-	return exe_dir;
+	} while (wait);
+	return fgets(dst, size, f);
 }
+
 #include <dirent.h>
+
+#ifdef __ANDROID__
+static dir_entry *jdir_list_helper(JNIEnv *env, jmethodID meth, char *path, size_t *numret)
+{
+	jstring jpath = (*env)->NewStringUTF(env, path);
+	jobject activity = SDL_AndroidGetActivity();
+	jobject ret = (*env)->CallObjectMethod(env, activity, meth, jpath);
+	dir_entry *res = NULL;
+	if (ret) {
+		jsize num = (*env)->GetArrayLength(env, ret);
+		if (numret) {
+			*numret = num;
+		}
+		res = calloc(num, sizeof(dir_entry));
+		for (jsize i = 0; i < num; i++)
+		{
+			jstring entry = (*env)->GetObjectArrayElement(env, ret, i);
+			char const *tmp = (*env)->GetStringUTFChars(env, entry, NULL);
+			jsize len = (*env)->GetStringUTFLength(env, entry);
+			res[i].name = calloc(len + 1, 1);
+			res[i].is_dir = tmp[len-1] == '/';
+			memcpy(res[i].name, tmp, res[i].is_dir ? len -1 : len);
+			(*env)->ReleaseStringUTFChars(env, entry, tmp);
+		}
+		(*env)->DeleteLocalRef(env, ret);
+	}
+	
+	(*env)->DeleteLocalRef(env, activity);
+	if (!res) {
+		if (numret) {
+			*numret = 0;
+		}
+		return NULL;
+	}
+	return res;
+}
+#endif
 
 dir_entry *get_dir_list(char *path, size_t *numret)
 {
+#ifdef __ANDROID__
+	debug_message("get_dir_list(%s)\n", path);
+	if (startswith(path, "content://")) {
+		static const char activity_class_name[] = "com/retrodev/blastem/BlastEmActivity";
+		static const char read_uri_dir_name[] = "readUriDir";
+		JNIEnv *env = SDL_AndroidGetJNIEnv();
+		jclass act_class = (*env)->FindClass(env, activity_class_name);
+		if (!act_class) {
+			fatal_error("Failed to find activity class %s\n", activity_class_name);
+		}
+		jmethodID meth = (*env)->GetMethodID(env, act_class, read_uri_dir_name, "(Ljava/lang/String;)[Ljava/lang/String;");
+		if (!meth) {
+			fatal_error("Failed to find method %s\n", read_uri_dir_name);
+		}
+		debug_message("get_dir_list(%s) using Storage Access Framework\n", path);
+		return jdir_list_helper(env, meth, path, numret);
+	}
+#endif
 	DIR *d = opendir(path);
 	if (!d) {
 		if (numret) {
@@ -853,27 +964,15 @@ dir_entry *get_dir_list(char *path, size_t *numret)
 	struct dirent* entry;
 	while (entry = readdir(d))
 	{
-#if defined(__HAIKU__)
-		struct stat sp;
-		stat(entry->d_name, &sp);
-		if (!S_ISREG(sp.st_mode) && !S_ISLNK(sp.st_mode) && !S_ISDIR(sp.st_mode)) {
-			continue;
-		}
-#else
 		if (entry->d_type != DT_REG && entry->d_type != DT_LNK && entry->d_type != DT_DIR) {
 			continue;
 		}
-#endif
 		if (pos == storage) {
 			storage = storage * 2;
 			ret = realloc(ret, sizeof(dir_entry) * storage);
 		}
 		ret[pos].name = strdup(entry->d_name);
-#if defined(__HAIKU__)
-		ret[pos++].is_dir = S_ISDIR(sp.st_mode);
-#else
 		ret[pos++].is_dir = entry->d_type == DT_DIR;
-#endif
 	}
 	if (numret) {
 		*numret = pos;
@@ -953,158 +1052,53 @@ uint8_t delete_file(char *path)
 {
 #ifdef _WIN32
 	//TODO: Call Unicode version and prepend special string to remove max path limitation
-	return 0 != DeleteFileA(path);
+	wchar_t *widepath = to_windows_path(path);
+	uint8_t ret = 0 != DeleteFileW(widepath);
+	free(widepath);
+	return ret;
 #else
 	return 0 == unlink(path);
 #endif
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 
 #include <SDL.h>
-#ifndef IS_LIB
-char *read_bundled_file(char *name, uint32_t *sizeret)
+static int open_uri(const char *path, const char *mode)
 {
-	SDL_RWops *rw = SDL_RWFromFile(name, "rb");
-	if (!rw) {
-		if (sizeret) {
-			*sizeret = -1;
-		}
-		return NULL;
+	static const char activity_class_name[] = "com/retrodev/blastem/BlastEmActivity";
+	static const char open_uri_as_fd_name[] = "openUriAsFd";
+	JNIEnv *env = SDL_AndroidGetJNIEnv();
+	jclass act_class = (*env)->FindClass(env, activity_class_name);
+	if (!act_class) {
+		fatal_error("Failed to find activity class %s\n", activity_class_name);
 	}
+	jmethodID meth = (*env)->GetMethodID(env, act_class, open_uri_as_fd_name, "(Ljava/lang/String;Ljava/lang/String;)I");
+	if (!meth) {
+		fatal_error("Failed to find method %s\n", open_uri_as_fd_name);
+	}
+	jobject activity = SDL_AndroidGetActivity();
+	jstring jpath = (*env)->NewStringUTF(env, path);
+	jstring jmode = (*env)->NewStringUTF(env, mode);
+	int fd = (*env)->CallIntMethod(env, activity, meth, jpath, jmode);
+	(*env)->DeleteLocalRef(env, activity);
+	return fd;
+}
 
-	long fsize = rw->size(rw);
-	if (sizeret) {
-		*sizeret = fsize;
-	}
-	char *ret;
-	if (fsize) {
-		ret = malloc(fsize);
-		if (SDL_RWread(rw, ret, 1, fsize) != fsize) {
-			free(ret);
-			ret = NULL;
+FILE* fopen_wrapper(const char *path, const char *mode)
+{
+	if (startswith(path, "content://")) {
+		debug_message("fopen_wrapper(%s, %s) - Using Storage Access Framework\n", path, mode);
+		int fd = open_uri(path, mode);
+		if (!fd) {
+			return NULL;
 		}
+		return fdopen(fd, mode);
 	} else {
-		ret = NULL;
+		debug_message("fopen_wrapper(%s, %s) - Norma fopen\n", path, mode);
+		return fopen(path, mode);
 	}
-	SDL_RWclose(rw);
-	return ret;
-}
-#endif
-
-char const *get_config_dir()
-{
-	return SDL_AndroidGetInternalStoragePath();
 }
 
-char const *get_userdata_dir()
-{
-	return SDL_AndroidGetInternalStoragePath();
-}
-
-#else
-
-#ifndef IS_LIB
-char *read_bundled_file(char *name, uint32_t *sizeret)
-{
-#ifdef DATA_PATH
-	char *data_dir = DATA_PATH;
-#else
-	char *data_dir = get_exe_dir();
-	if (!data_dir) {
-		if (sizeret) {
-			*sizeret = -1;
-		}
-		return NULL;
-	}
-#endif
-	char const *pieces[] = {data_dir, PATH_SEP, name};
-	char *path = alloc_concat_m(3, pieces);
-	FILE *f = fopen(path, "rb");
-	free(path);
-	if (!f) {
-		if (sizeret) {
-			*sizeret = -1;
-		}
-		return NULL;
-	}
-
-	long fsize = file_size(f);
-	if (sizeret) {
-		*sizeret = fsize;
-	}
-	char *ret;
-	if (fsize) {
-		//reserve an extra byte in case caller wants
-		//to null terminate the data
-		ret = malloc(fsize+1);
-		if (fread(ret, 1, fsize, f) != fsize) {
-			free(ret);
-			ret = NULL;
-		}
-	} else {
-		ret = NULL;
-	}
-	fclose(f);
-	return ret;
-}
-#endif //ISLIB
-
-#ifdef _WIN32
-char const *get_userdata_dir()
-{
-	static char path[MAX_PATH];
-	if (S_OK == SHGetFolderPath(NULL, CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE, NULL, 0, path))
-	{
-		return path;
-	}
-	return NULL;
-}
-
-char const *get_config_dir()
-{
-	static char* confdir;
-	if (!confdir) {
-		char const *base = get_userdata_dir();
-		if (base) {	
-			confdir = alloc_concat(base,  PATH_SEP "blastem");
-		}
-	}
-	return confdir;
-}
-#define CONFIG_PREFIX ""
-#define SAVE_PREFIX ""
-
-#else
-
-#define CONFIG_PREFIX "/.config"
-#define USERDATA_SUFFIX "/.local/share"
-
-char const *get_config_dir()
-{
-	static char* confdir;
-	if (!confdir) {
-		char const *base = get_home_dir();
-		if (base) {
-			confdir = alloc_concat(base, CONFIG_PREFIX PATH_SEP "blastem");
-		}
-	}
-	return confdir;
-}
-
-char const *get_userdata_dir()
-{
-	static char* savedir;
-	if (!savedir) {
-		char const *base = get_home_dir();
-		if (base) {
-			savedir = alloc_concat(base, USERDATA_SUFFIX);
-		}
-	}
-	return savedir;
-}
-
-
-#endif //_WIN32
-#endif //__ANDROID__
+#endif //defined(__ANDROID__) && !defined(IS_LIB)
 

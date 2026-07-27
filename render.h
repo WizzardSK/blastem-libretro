@@ -13,6 +13,8 @@
 #include "special_keys_evdev.h"
 #define render_relative_mouse(V)
 #else
+//avoid main getting #defined places we don't want it
+#define SDL_MAIN_HANDLED
 #include <SDL.h>
 #define RENDERKEY_UP       SDLK_UP
 #define RENDERKEY_DOWN     SDLK_DOWN
@@ -66,7 +68,7 @@
 #define RENDER_DPAD_DOWN   SDL_HAT_DOWN
 #define RENDER_DPAD_LEFT   SDL_HAT_LEFT
 #define RENDER_DPAD_RIGHT  SDL_HAT_RIGHT
-#define render_relative_mouse SDL_SetRelativeMouseMode
+void render_relative_mouse(uint8_t enabled);
 typedef SDL_Thread* render_thread;
 #endif
 #endif
@@ -83,6 +85,7 @@ typedef SDL_Thread* render_thread;
 typedef enum {
 	VID_NTSC,
 	VID_PAL,
+	VID_GAMEGEAR,
 	NUM_VID_STD
 } vid_std;
 
@@ -93,16 +96,25 @@ typedef enum {
 #define RENDER_NOT_MAPPED -2
 #define RENDER_NOT_PLUGGED_IN -3
 
-typedef void (*drop_handler)(const char *filename);
+typedef void (*drop_handler)(char *filename);
 typedef void (*window_close_handler)(uint8_t which);
 typedef void (*ui_render_fun)(void);
 typedef int (*render_thread_fun)(void*);
 
-uint32_t render_map_color(uint8_t r, uint8_t g, uint8_t b);
+#include "pixel.h"
+
+pixel_t render_map_color(uint8_t r, uint8_t g, uint8_t b);
 void render_save_screenshot(char *path);
+uint8_t render_saving_video(void);
+void render_end_video(void);
+void render_save_video(char *path);
+uint8_t render_create_window_tex(char *caption, uint32_t width, uint32_t height, uint32_t tex_width, uint32_t tex_height, window_close_handler close_handler);
 uint8_t render_create_window(char *caption, uint32_t width, uint32_t height, window_close_handler close_handler);
+#ifndef DISABLE_OPENGL
+uint32_t render_get_window_texture(uint8_t which);
+#endif
 void render_destroy_window(uint8_t which);
-uint32_t *render_get_framebuffer(uint8_t which, int *pitch);
+pixel_t *render_get_framebuffer(uint8_t which, int *pitch);
 void render_framebuffer_updated(uint8_t which, int width);
 //returns the framebuffer index associated with the Window that has focus
 uint8_t render_get_active_framebuffer(void);
@@ -114,7 +126,8 @@ void render_wait_quit(void);
 void process_events();
 int render_width();
 int render_height();
-int render_fullscreen();
+uint8_t render_fullscreen(void);
+void render_force_cursor(uint8_t force);
 void render_set_drag_drop_handler(drop_handler handler);
 void process_events();
 int32_t render_translate_input_name(int32_t controller, char *name, uint8_t is_axis);
@@ -135,14 +148,26 @@ void render_sleep_ms(uint32_t delay);
 uint8_t render_has_gl(void);
 void render_config_updated(void);
 void render_set_gl_context_handlers(ui_render_fun destroy, ui_render_fun create);
-void render_set_ui_render_fun(ui_render_fun);
+void render_set_ui_render_fun(uint8_t which, ui_render_fun);
 void render_set_ui_fb_resize_handler(ui_render_fun resize);
+void render_set_frame_presented_fun(ui_render_fun);
+void render_set_audio_full_fun(ui_render_fun);
 void render_video_loop(void);
 uint8_t render_should_release_on_exit(void);
 void render_set_external_sync(uint8_t ext_sync_on);
 void render_reset_mappings(void);
+void render_update_display(void);
+int render_ui_to_pixels_x(int ui);
+int render_ui_to_pixels_y(int ui);
+char *render_read_clipboard(void);
+uint8_t render_is_threaded_video(void);
 #ifndef IS_LIB
 uint8_t render_create_thread(render_thread *thread, const char *name, render_thread_fun fun, void *data);
+uint8_t render_static_image(uint8_t window, uint8_t *buffer, uint32_t size);
+void render_draw_image(uint8_t window, uint8_t image, int x, int y, int width, int height);
+void render_clear_window(uint8_t window, uint8_t r, uint8_t g, uint8_t b);
+void render_fill_rect(uint8_t window, uint8_t r, uint8_t g, uint8_t b, int x, int y, int width, int height);
+void render_window_refresh(uint8_t window);
 #endif
 
 #endif //RENDER_H_

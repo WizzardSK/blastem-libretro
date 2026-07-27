@@ -9,6 +9,7 @@ typedef enum {
 } render_audio_format;
 
 typedef struct {
+	const char *name;
 	void     *opaque;
 	int16_t  *front;
 	int16_t  *back;
@@ -28,7 +29,7 @@ typedef struct {
 } audio_source;
 
 //public interface
-audio_source *render_audio_source(uint64_t master_clock, uint64_t sample_divider, uint8_t channels);
+audio_source *render_audio_source(const char *name, uint64_t master_clock, uint64_t sample_divider, uint8_t channels);
 void render_audio_source_gaindb(audio_source *src, float gain);
 void render_audio_adjust_clock(audio_source *src, uint64_t master_clock, uint64_t sample_divider);
 void render_put_mono_sample(audio_source *src, int16_t value);
@@ -36,6 +37,8 @@ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right);
 void render_pause_source(audio_source *src);
 void render_resume_source(audio_source *src);
 void render_free_source(audio_source *src);
+void render_end_audio(void);
+void render_save_audio(char *path);
 //interface for render backends
 void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t channels, uint32_t buffer_size, int sample_size);
 int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out);

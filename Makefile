@@ -1,20 +1,28 @@
 #disable built-in rules
 .SUFFIXES :
+.PHONY: all clean
 
 ifndef OS
 OS:=$(shell uname -s)
 endif
+ifndef SDL
+SDL:=sdl2
+endif
+SDL_UPPER:=$(shell echo $(SDL) | tr '[a-z]' '[A-Z]')
 FIXUP:=true
+Z80_DISPATCH:=goto
 
 BUNDLED_LIBZ:=zlib/adler32.o zlib/compress.o zlib/crc32.o zlib/deflate.o zlib/gzclose.o zlib/gzlib.o zlib/gzread.o\
 	zlib/gzwrite.o zlib/infback.o zlib/inffast.o zlib/inflate.o zlib/inftrees.o zlib/trees.o zlib/uncompr.o zlib/zutil.o
 
+UTIL_LDFLAGS:=
 ifeq ($(OS),Windows)
 
 GLEW_PREFIX:=glew
 MEM:=mem_win.o
 TERMINAL:=terminal_win.o
 FONT:=nuklear_ui/font_win.o
+CHOOSER:=nuklear_ui/filechooser_win.o
 NET:=net_win.o
 EXE:=.exe
 SO:=dll
@@ -32,10 +40,10 @@ GLUDIR:=x64
 endif
 GLEW32S_LIB:=$(GLEW_PREFIX)/lib/Release/$(GLUDIR)/glew32s.lib
 CFLAGS:=-std=gnu99 -Wreturn-type -Werror=return-type -Werror=implicit-function-declaration -Wpointer-arith -Werror=pointer-arith
-LDFLAGS:=-lm -lmingw32 -lws2_32 -mwindows
+LDFLAGS:=-lm -lmingw32 -lws2_32 -lcomdlg32 -lole32 -mwindows
 ifneq ($(MAKECMDGOALS),libblastem.dll)
-CFLAGS+= -I"$(SDL2_PREFIX)/include/SDL2" -I"$(GLEW_PREFIX)/include" -DGLEW_STATIC
-LDFLAGS+= $(GLEW32S_LIB) -L"$(SDL2_PREFIX)/lib" -lSDL2main -lSDL2 -lopengl32 -lglu32
+CFLAGS+= -I"$(SDL2_PREFIX)/include/$(SDL_UPPER)" -I"$(GLEW_PREFIX)/include" -DGLEW_STATIC
+LDFLAGS+= $(GLEW32S_LIB) -L"$(SDL2_PREFIX)/lib" -l$(SDL_UPPER)main -l$(SDL_UPPER) -lopengl32 -lglu32
 endif
 LIBZOBJS=$(BUNDLED_LIBZ)
 
@@ -50,11 +58,20 @@ HAS_PROC:=$(shell if [ -d /proc ]; then /bin/echo -e -DHAS_PROC; fi)
 CFLAGS:=-std=gnu99 -Wreturn-type -Werror=return-type -Werror=implicit-function-declaration -Wno-unused-value  -Wpointer-arith -Werror=pointer-arith $(HAS_PROC) -DHAVE_UNISTD_H
 
 ifeq ($(OS),Darwin)
-LIBS=sdl2 glew
+LIBS=$(SDL) glew
 FONT:=nuklear_ui/font_mac.o
+CHOOSER:=nuklear_ui/filechooser_null.o
 SO:=dylib
 else
 SO:=so
+
+ifeq ($(CPU),wasm)
+USE_GLES:=1
+endif
+
+ifdef USE_RGB565
+CFLAGS+= -DUSE_RGB565
+endif
 
 ifdef USE_FBDEV
 LIBS=alsa
@@ -64,13 +81,34 @@ endif
 CFLAGS+= -DUSE_GLES -DUSE_FBDEV -pthread
 else
 ifdef USE_GLES
-LIBS=sdl2 glesv2
+LIBS=$(SDL) glesv2
 CFLAGS+= -DUSE_GLES
 else
-LIBS=sdl2 glew gl
+LIBS=$(SDL) glew gl
 endif #USE_GLES
 endif #USE_FBDEV
+ifeq ($(CPU),wasm)
+CHOOSER:=nuklear_ui/filechooser_null.o
+FONT:=nuklear_ui/font_web.o
+Z80_DISPATCH:=call
+else #CPU=wasm
 FONT:=nuklear_ui/font.o
+ifneq ($(MAKECMDGOALS),libblastem.$(SO))
+CHOOSER:=nuklear_ui/filechooser_gtk.o
+GTKFLAGS:=$(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
+ifeq ($(GTKFLAGS),)
+GTKFLAGS:=$(shell pkg-config --cflags gtk+-2.0 2>/dev/null)
+ifeq ($(GTKFLAGS),)
+CHOOSER:=nuklear_ui/filechooser_null.o
+endif
+endif
+endif #neq ($(MAKECMDGOALS),libblastem.$(SO))
+endif #CPU=wasm
+ifeq ($(GTKFLAGS),)
+else
+EXTRA_NUKLEAR_LDFLAGS:=-ldl
+endif
+CFLAGS+= $(GTKFLAGS)
 endif #Darwin
 
 ifdef HOST_ZLIB
@@ -84,32 +122,46 @@ ifeq ($(OS),Darwin)
 #This should really be based on whether or not the C compiler is clang rather than based on the OS
 CFLAGS+= -Wno-logical-op-parentheses
 endif
+
+ifeq ($(CPU),wasm)
+CFLAGS+= --use-port=sdl2
+LDFLAGS+= --use-port=sdl2 --embed-file rom.db --embed-file default.cfg --embed-file systems.cfg \
+ --embed-file shaders/ --embed-file images/ --embed-file DroidSans.ttf -sEXPORTED_FUNCTIONS=_main,_handle_chooser_result \
+ -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain -sINITIAL_HEAP=50331648 --pre-js emscripten_pre.js -lidbfs.js
+EXE:=.html
+else #CPU=wasm
+
 ifdef PORTABLE
 ifdef USE_GLES
 ifndef GLES_LIB
 GLES_LIB:=$(shell pkg-config --libs glesv2)
 endif
 LDFLAGS:=-lm $(GLES_LIB)
-else
+else #USE_GLES
 CFLAGS+= -DGLEW_STATIC -Iglew/include
-LDFLAGS:=-lm glew/lib/libGLEW.a
-endif
+LDFLAGS:=-lm glew/lib/libGLEW.a -lEGL
+endif #USE_GLES
 
 ifeq ($(OS),Darwin)
-SDL_INCLUDE_PATH:=Frameworks/SDL2.framework/Headers
+SDL_INCLUDE_PATH:=Frameworks/$(SDL_UPPER).framework/Headers
 CFLAGS+=  -mmacosx-version-min=10.10
-LDFLAGS+= -mmacosx-version-min=10.10
-FIXUP:=install_name_tool -change @rpath/SDL2.framework/Versions/A/SDL2 @executable_path/Frameworks/SDL2.framework/Versions/A/SDL2
+LDFLAGS+= -FFrameworks -framework $(SDL_UPPER) -framework OpenGL -framework AppKit -mmacosx-version-min=10.10
+FIXUP:=install_name_tool -change @rpath/$(SDL_UPPER).framework/Versions/A/$(SDL_UPPER) @executable_path/Frameworks/$(SDL_UPPER).framework/Versions/A/$(SDL_UPPER)
+else #Darwin
+ifeq ($(SDL),sdl3)
+SDL_INCLUDE_PATH:=sdl/include/SDL3
+CFLAGS+= -Isdl/include -DSDL_ENABLE_OLD_NAMES
 else
 SDL_INCLUDE_PATH:=sdl/include
-LDFLAGS+= -Wl,-rpath='$$ORIGIN/lib' -Llib -lSDL2
+endif
+LDFLAGS+= -Wl,-rpath='$$ORIGIN/lib' -Llib -l$(SDL_UPPER)
 ifndef USE_GLES
 LDFLAGS+= $(shell pkg-config --libs gl)
 endif
 endif #Darwin
 CFLAGS+= -I$(SDL_INCLUDE_PATH)
 
-else
+else #PORTABLE
 ifeq ($(MAKECMDGOALS),libblastem.$(SO))
 LDFLAGS:=-lm
 else
@@ -121,25 +173,25 @@ endif
 endif #libblastem.so
 
 ifeq ($(OS),Darwin)
-ifneq ($(LIBRETRO),1)
 LDFLAGS+= -framework OpenGL -framework AppKit
-endif
 endif
 
 endif #PORTABLE
+endif #CPU=wasm
 endif #Windows
 
-ifndef OPT
 ifdef DEBUG
+OBJDIR:=obj/debug
 OPT:=-g3 -O0
 else
+OBJDIR:=obj/release
 ifdef NOLTO
 OPT:=-O2
 else
 OPT:=-O2 -flto
 endif #NOLTO
 endif #DEBUG
-endif #OPT
+LIBOBJDIR:=$(OBJDIR)/lib
 
 CFLAGS:=$(OPT) $(CFLAGS)
 LDFLAGS:=$(OPT) $(LDFLAGS)
@@ -178,17 +230,27 @@ ifeq ($(CPU),i386)
 CPU:=i686
 endif
 endif
-
-#Haiku uses a different name for 32bit
-ifeq ($(CPU),BePC)
-CPU:=i686
+ifeq ($(CPU),x86_64)
+CFLAGS+=-DX86_64 -m64
+LDFLAGS+=-m64
+else
+ifeq ($(CPU),i686)
+CFLAGS+=-DX86_32 -m32
+LDFLAGS+=-m32
+else
+NEW_CORE:=1
+endif
 endif
 
 TRANSOBJS=gen.o backend.o $(MEM) arena.o tern.o
-M68KOBJS=68kinst.o
+M68KOBJS=68kinst.o disasm.o
+
+ifdef NO_FILE_CHOOSER
+CHOOSER:=nuklear_ui/filechooser_nulll.o
+endif
 
 ifdef NEW_CORE
-Z80OBJS=z80.o z80inst.o 
+Z80OBJS=z80.o z80inst.o
 M68KOBJS+= m68k.o
 CFLAGS+= -DNEW_CORE
 else
@@ -203,53 +265,44 @@ TRANSOBJS+= gen_x86.o backend_x86.o
 endif
 endif
 endif
-AUDIOOBJS=ym2612.o psg.o wave.o vgm.o event_log.o render_audio.o
-CONFIGOBJS=config.o tern.o util.o paths.o 
-NUKLEAROBJS=$(FONT) nuklear_ui/blastem_nuklear.o nuklear_ui/sfnt.o
+AUDIOOBJS=ym2612.o ymf262.o ym_common.o psg.o wave.o flac.o vgm.o event_log.o render_audio.o rf5c164.o
+CONFIGOBJS=config.o tern.o util.o paths.o
+NUKLEAROBJS=$(FONT) $(CHOOSER) nuklear_ui/blastem_nuklear.o nuklear_ui/sfnt.o nuklear_ui/debug_ui.o
 RENDEROBJS=ppm.o controller_info.o
 ifdef USE_FBDEV
 RENDEROBJS+= render_fbdev.o
 else
 RENDEROBJS+= render_sdl.o
 endif
-	
+
 ifdef NOZLIB
 CFLAGS+= -DDISABLE_ZLIB
 else
 RENDEROBJS+= $(LIBZOBJS) png.o
 endif
 
-MAINOBJS=blastem.o system.o genesis.o debug.o gdb_remote.o vdp.o $(RENDEROBJS) io.o romdb.o hash.o menu.o xband.o \
-	realtec.o i2c.o nor.o sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
-	$(M68KOBJS) $(TRANSOBJS) $(AUDIOOBJS) saves.o zip.o bindings.o jcart.o gen_player.o
-
-LIBOBJS=libblastem.o system.o genesis.o debug.o gdb_remote.o vdp.o io.o romdb.o hash.o xband.o realtec.o \
-	i2c.o nor.o sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
-	$(M68KOBJS) $(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o rom.db.o gen_player.o $(LIBZOBJS)
-	
-ifdef NONUKLEAR
-CFLAGS+= -DDISABLE_NUKLEAR
-else
-MAINOBJS+= $(NUKLEAROBJS)
-endif
-
-ifeq ($(CPU),x86_64)
-CFLAGS+=-DX86_64 -m64
-LDFLAGS+=-m64
-else
-ifeq ($(CPU),i686)
-CFLAGS+=-DX86_32 -m32
-LDFLAGS+=-m32
-else
-$(error $(CPU) is not a supported architecture)
-endif
-endif
+COREOBJS:=system.o genesis.o vdp.o io.o romdb.o hash.o xband.o realtec.o i2c.o nor.o $(M68KOBJS) \
+	sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
+	$(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o gen_player.o coleco.o pico_pcm.o ymz263b.o \
+	segacd.o lc8951.o cdimage.o cdd_mcu.o cd_graphics.o cdd_fader.o sft_mapper.o mediaplayer.o \
+	laseractive.o upd78k2_dis.o upd78k2.o osd_font.o pd0178.o radica.o 32x.o 32x_video.o sh2.o \
+	sh2_decode.o sh7095.o
 
 ifdef NOZ80
 CFLAGS+=-DNO_Z80
 else
-MAINOBJS+= sms.o $(Z80OBJS)
-LIBOBJS+= sms.o $(Z80OBJS)
+COREOBJS+= sms.o i8255.o korean_sms_multi.o $(Z80OBJS)
+endif
+
+MAINOBJS:=$(COREOBJS) blastem.o $(RENDEROBJS) zip.o  menu.o debug.o gdb_remote.o bindings.o oscilloscope.o
+
+LIBOBJS:=$(COREOBJS) libblastem.o rom.db.o $(LIBZOBJS)
+
+ifdef NONUKLEAR
+CFLAGS+= -DDISABLE_NUKLEAR
+else
+MAINOBJS+= $(NUKLEAROBJS)
+LDFLAGS+=$(EXTRA_NUKLEAR_LDFLAGS)
 endif
 
 ifeq ($(OS),Windows)
@@ -268,105 +321,138 @@ ifdef FONT_PATH
 CFLAGS+= -DFONT_PATH='"'$(FONT_PATH)'"'
 endif
 
-ALL=dis$(EXE) zdis$(EXE) vgmplay$(EXE) blastem$(EXE)
+ALL=dis$(EXE) zdis$(EXE) upddis$(EXE) sh2dis$(EXE) blastem$(EXE)
 ifneq ($(OS),Windows)
 ALL+= termhelper
 endif
+DISOBJS:=dis.o disasm.o backend.o 68kinst.o tern.o vos_program_module.o util.o
+ZDISOBJS:=zdis.o z80inst.o tern.o util.o
+MTESTOBJS:=trans.o serialize.o $(M68KOBJS) $(TRANSOBJS) util.o
+ZTESTOBJS:=ztestrun.o serialize.o $(Z80OBJS) $(TRANSOBJS) util.o
+CPMOBJS:=blastcpm.o util.o serialize.o $(Z80OBJS) $(TRANSOBJS)
+UPD78K2RUNOBJS:=upd78k2.o upd78k2run.o util.o backend.o tern.o
+UPDDISOBJS:=upddis.o upd78k2_dis.o disasm.o tern.o util.o backend.o
+SH2DISOBJS:=sh2dis.o sh2_decode.o disasm.o tern.o util.o backend.o
 
-ifeq ($(MAKECMDGOALS),libblastem.$(SO))
-CFLAGS+= -fpic -DIS_LIB
-endif
+LIBCFLAGS=$(CFLAGS) -fpic -DIS_LIB -DDISABLE_ZLIB
 
 all : $(ALL)
 
-libblastem.$(SO) : $(LIBOBJS)
+ORDERONLY:=$(OBJDIR)
+LIBORDERONLY:=$(LIBOBJDIR)
+ifdef NEW_CORE
+ifeq ($(wildcard $(OBJDIR)/*.d),)
+ORDERONLY+= m68k.c z80.c
+endif
+ifeq ($(wildcard $(LIBOBJDIR)/*.d),)
+LIBORDERONLY+= m68k.c z80.c
+endif
+endif
+
+#if we've never built the uPD78K2 core before we don't know which other files
+#depend on its header, so force DSL compilation to occur before everything else
+ifeq ($(wildcard $(OBJDIR)/upd78k2.d),)
+ORDERONLY+= upd78k2.c
+endif
+ifeq ($(wildcard $(LIBOBJDIR)/upd78k2.d),)
+LIBORDERONLY+= upd78k2.c
+endif
+#same for the SH2 core
+ifeq ($(wildcard $(OBJDIR)/sh2.d),)
+ORDERONLY+= sh2.c
+endif
+ifeq ($(wildcard $(LIBOBJDIR)/sh2.d),)
+LIBORDERONLY+= sh2.c
+endif
+
+-include $(MAINOBJS:%.o=$(OBJDIR)/%.d)
+-include $(LIBOBJS:%.o=$(LIBOBJDIR)/%.d)
+-include $(DISOBJS:%.o=$(OBJDIR)/%.d)
+-include $(ZDISOBJS:%.o=$(OBJDIR)/%.d)
+-include $(UPD78K2RUNOBJS:%.o=$(OBJDIR)/%.d)
+-include $(UPDDISOBJS:%.o=$(OBJDIR)/%.d)
+-include $(SH2DISOBJS:%.o=$(OBJDIR)/%.d)
+-include $(OBJDIR)/trans.d
+-include $(OBJDIR)/ztestrun.d
+-include $(OBJDIR)/blastcpm.d
+
+$(OBJDIR) :
+	mkdir -p $(OBJDIR)/nuklear_ui
+	mkdir -p $(OBJDIR)/zlib
+
+$(LIBOBJDIR) :
+	mkdir -p $(LIBOBJDIR)/zlib
+
+libblastem.$(SO) : $(LIBOBJS:%.o=$(LIBOBJDIR)/%.o)
 	$(CC) -shared -o $@ $^ $(LDFLAGS)
 
-blastem$(EXE) : $(MAINOBJS)
+blastem$(EXE) : $(MAINOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(LDFLAGS) $(PROFFLAGS)
 	$(FIXUP) ./$@
-	
-blastjag$(EXE) : jaguar.o jag_video.o $(RENDEROBJS) serialize.o $(M68KOBJS) $(TRANSOBJS) $(CONFIGOBJS)
+
+termhelper : $(OBJDIR)/termhelper.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-termhelper : termhelper.o
-	$(CC) -o $@ $^ $(LDFLAGS)
-
-dis$(EXE) : dis.o 68kinst.o tern.o vos_program_module.o
-	$(CC) -o $@ $^ $(OPT)
-	
-jagdis : jagdis.o jagcpu.o tern.o
-	$(CC) -o $@ $^
-
-zdis$(EXE) : zdis.o z80inst.o
-	$(CC) -o $@ $^
-
-libemu68k.a : $(M68KOBJS) $(TRANSOBJS)
-	ar rcs libemu68k.a $(M68KOBJS) $(TRANSOBJS)
-
-trans : trans.o serialize.o $(M68KOBJS) $(TRANSOBJS) util.o
+dis$(EXE) : $(DISOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(OPT)
 
-transz80 : transz80.o $(Z80OBJS) $(TRANSOBJS)
-	$(CC) -o transz80 transz80.o $(Z80OBJS) $(TRANSOBJS)
+jagdis : $(OBJDIR)/jagdis.o $(OBJDIR)/jagcpu.o $(OBJDIR)/tern.o
+	$(CC) -o $@ $^ $(OPT)
 
-ztestrun : ztestrun.o serialize.o $(Z80OBJS) $(TRANSOBJS)
-	$(CC) -o ztestrun $^ $(OPT)
+zdis$(EXE) : $(ZDISOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-ztestgen : ztestgen.o z80inst.o
-	$(CC) -ggdb -o ztestgen ztestgen.o z80inst.o
+trans : $(MTESTOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-vgmplay$(EXE) : vgmplay.o $(RENDEROBJS) serialize.o $(CONFIGOBJS) $(AUDIOOBJS)
-	$(CC) -o $@ $^ $(LDFLAGS)
-	$(FIXUP) ./$@
+ztestrun : $(ZTESTOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-blastcpm : blastcpm.o util.o serialize.o $(Z80OBJS) $(TRANSOBJS)
+ztestgen : $(OBJDIR)/ztestgen.o $(OBJDIR)/z80inst.o
+	$(CC) -o $@ $^ $(OPT)
+
+blastcpm$(EXE) : $(CPMOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(OPT) $(PROFFLAGS)
 
-test : test.o vdp.o
-	$(CC) -o test test.o vdp.o
+vos_prog_info : $(OBJDIR)/vos_prog_info.o $(OBJDIR)/vos_program_module.o
+	$(CC) -o $@ $^ $(OPT)
 
-testgst : testgst.o gst.o
-	$(CC) -o testgst testgst.o gst.o
+upd78k2run : $(UPD78K2RUNOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-test_x86 : test_x86.o gen_x86.o gen.o
-	$(CC) -o test_x86 test_x86.o gen_x86.o gen.o
+upddis$(EXE) : $(UPDDISOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-test_arm : test_arm.o gen_arm.o mem.o gen.o
-	$(CC) -o test_arm test_arm.o gen_arm.o mem.o gen.o
-	
-test_int_timing : test_int_timing.o vdp.o
-	$(CC) -o $@ $^
+sh2dis$(EXE) : $(SH2DISOBJS:%.o=$(OBJDIR)/%.o)
+	$(CC) -o $@ $^ $(OPT)
 
-gen_fib : gen_fib.o gen_x86.o mem.o
-	$(CC) -o gen_fib gen_fib.o gen_x86.o mem.o
-
-offsets : offsets.c z80_to_x86.h m68k_core.h
-	$(CC) -o offsets offsets.c
-
-vos_prog_info : vos_prog_info.o vos_program_module.o
-	$(CC) -o vos_prog_info vos_prog_info.o vos_program_module.o
-	
-m68k.c : m68k.cpu cpu_dsl.py
-	./cpu_dsl.py -d call $< > $@
-
-%.c : %.cpu cpu_dsl.py
-	./cpu_dsl.py -d goto $< > $@
+.PRECIOUS: %.c
+%.c %.h : %.cpu cpu_dsl.py
+	./cpu_dsl.py -d $(shell echo $@ | sed -E -e "s/^z80.*$$/$(Z80_DISPATCH)/" -e '/^goto/! s/^.*$$/call/') $< > $(shell echo $@ | sed -E 's/\.[ch]$$/./')c
 
 %.db.c : %.db
-	sed -e 's/"/\\"/g' -e 's/^\(.*\)$$/"\1\\n"/' -e'1s/^\(.*\)$$/const char $(shell echo $< | tr '.' '_')_data[] = \1/' -e '$$s/^\(.*\)$$/\1;/' $< > $@
+	sed $< -e 's/"/\\"/g' -e 's/^\(.*\)$$/"\1\\n"/' -e'1s/^\(.*\)$$/const char $(shell echo $< | tr '.' '_')_data[] = \1/' -e '$$s/^\(.*\)$$/\1;/' > $@
 
-%.o : %.S
-	$(CC) -c -o $@ $<
+$(OBJDIR)/%.o : %.S | $(ORDERONLY)
+	$(CC) -c -MMD -o $@ $<
 
-%.o : %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-  
-%.o : %.m
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(OBJDIR)/%.o : %.c | $(ORDERONLY)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+$(OBJDIR)/%.o : %.m | $(ORDERONLY)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+$(LIBOBJDIR)/%.o : %.S | $(LIBORDERONLY)
+	$(CC) -c -MMD -o $@ $<
+
+$(LIBOBJDIR)/%.o : %.c | $(LIBORDERONLY)
+	$(CC) $(LIBCFLAGS) -c -MMD -o $@ $<
+
+$(LIBOBJDIR)/%.o : %.m | $(LIBORDERONLY)
+	$(CC) $(LIBCFLAGS) -c -MMD -o $@ $<
 
 %.png : %.xcf
-	xcf2png $< > $@
+	convert -background none -flatten $< $@
 
 %.tiles : %.spec
 	./img2tiles.py -s $< $@
@@ -379,8 +465,8 @@ m68k.c : m68k.cpu cpu_dsl.py
 
 %.bin : %.sz8
 	vasmz80_mot -Fbin -spaces -o $@ $<
-res.o : blastem.rc
-	$(WINDRES) blastem.rc res.o
+$(OBJDIR)/res.o : blastem.rc
+	$(WINDRES) $< $@
 
 arrow.tiles : arrow.png
 cursor.tiles : cursor.png
@@ -392,4 +478,4 @@ menu.bin : font_interlace_variable.tiles arrow.tiles cursor.tiles button.tiles f
 tmss.md : font.tiles
 
 clean :
-	rm -rf $(ALL) trans ztestrun ztestgen *.o nuklear_ui/*.o zlib/*.o
+	rm -rf $(ALL) trans ztestrun ztestgen *.o nuklear_ui/*.o zlib/*.o $(OBJDIR)

@@ -25,6 +25,7 @@ int gdb_sock;
 #include "68kinst.h"
 #include "debug.h"
 #include "util.h"
+#include "net.h"
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -48,13 +49,6 @@ size_t bufsize;
 int cont = 0;
 int expect_break_response=0;
 uint32_t resume_pc;
-
-
-static uint16_t branch_t;
-static uint16_t branch_f;
-
-static bp_def * breakpoints = NULL;
-static uint32_t bp_index = 0;
 
 
 void hex_32(uint32_t num, char * out)
@@ -114,35 +108,43 @@ void gdb_send_command(char * command)
 uint32_t calc_status(m68k_context * context)
 {
 	uint32_t status = context->status << 3;
+#ifdef NEW_CORE
+	//TODO: implement me
+#else
 	for (int i = 0; i < 5; i++)
 	{
 		status <<= 1;
 		status |= context->flags[i];
 	}
+#endif
 	return status;
 }
 
 void update_status(m68k_context * context, uint16_t value)
 {
 	context->status = value >> 8;
+#ifdef NEW_CORE
+	//TODO: implement me
+#else
 	for (int i = 4; i >= 0; i--)
 	{
 		context->flags[i] = value & 1;
 		value >>= 1;
 	}
+#endif
 }
 
 static uint8_t m68k_read_byte(m68k_context *context, uint32_t address)
 {
 	//TODO: share this implementation with builtin debugger
-	return read_byte(address, (void **)context->mem_pointers, &context->options->gen, context);
+	return read_byte(address, (void **)context->mem_pointers, &context->opts->gen, context);
 }
 
 void m68k_write_byte(m68k_context * context, uint32_t address, uint8_t value)
 {
 	genesis_context *gen = context->system;
 	//TODO: Use generated read/write functions so that memory map is properly respected
-	uint16_t * word = get_native_pointer(address & 0xFFFFFFFE, (void **)context->mem_pointers, &context->options->gen);
+	uint16_t * word = get_native_pointer(address & 0xFFFFFFFE, (void **)context->mem_pointers, &context->opts->gen);
 	if (word) {
 		if (address & 1) {
 			*word = (*word & 0xFF00) | value;
@@ -171,6 +173,10 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 {
 	char send_buf[512];
 	dfprintf(stderr, "Received command %s\n", command);
+	debug_root *root = find_root(context);
+	if (!root) {
+		fatal_error("Could not find debug root for CPU %p\n", context);
+	}
 	switch(*command)
 	{
 
@@ -187,14 +193,10 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 			//TODO: implement resuming at an arbitrary address
 			goto not_impl;
 		}
+#ifndef NEW_CORE
 		m68kinst inst;
 		genesis_context *gen = context->system;
-		uint16_t * pc_ptr = get_native_pointer(pc, (void **)context->mem_pointers, &context->options->gen);
-		if (!pc_ptr) {
-			fatal_error("Entered gdb remote debugger stub at address %X\n", pc);
-		}
-		uint16_t * after_pc = m68k_decode(pc_ptr, &inst, pc & 0xFFFFFF);
-		uint32_t after = pc + (after_pc-pc_ptr)*2;
+		uint32_t after = m68k_decode(m68k_instruction_fetch, context, &inst, pc & 0xFFFFFF);
 
 		if (inst.op == M68K_RTS) {
 			after = (read_dma_value(context->aregs[7]/2) << 16) | read_dma_value(context->aregs[7]/2 + 1);
@@ -202,18 +204,19 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 			after = (read_dma_value((context->aregs[7]+2)/2) << 16) | read_dma_value((context->aregs[7]+2)/2 + 1);
 		} else if(m68k_is_branch(&inst)) {
 			if (inst.op == M68K_BCC && inst.extra.cond != COND_TRUE) {
-				branch_f = after;
-				branch_t = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
-				insert_breakpoint(context, branch_t, gdb_debug_enter);
+				root->branch_f = after;
+				root->branch_t = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
+				insert_breakpoint(context, root->branch_t, gdb_debug_enter);
 			} else if(inst.op == M68K_DBCC && inst.extra.cond != COND_FALSE) {
-				branch_t = after;
-				branch_f = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
-				insert_breakpoint(context, branch_f, gdb_debug_enter);
+				root->branch_t = after;
+				root->branch_f = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
+				insert_breakpoint(context, root->branch_f, gdb_debug_enter);
 			} else {
 				after = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
 			}
 		}
 		insert_breakpoint(context, after, gdb_debug_enter);
+#endif
 
 		cont = 1;
 		expect_break_response = 1;
@@ -229,27 +232,43 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 		break;
 	case 'Z': {
 		uint8_t type = command[1];
+		char *after_address;
+		uint32_t address = strtoul(command+3, &after_address, 16);
+		uint32_t kind = strtoul(after_address +1, NULL, 16);
 		if (type < '2') {
-			uint32_t address = strtoul(command+3, NULL, 16);
 			insert_breakpoint(context, address, gdb_debug_enter);
 			bp_def *new_bp = malloc(sizeof(bp_def));
-			new_bp->next = breakpoints;
+			new_bp->next = root->breakpoints;
 			new_bp->address = address;
-			new_bp->index = bp_index++;
-			breakpoints = new_bp;
+			new_bp->mask = 0xFFFFFF;
+			new_bp->type = BP_TYPE_CPU;
+			new_bp->index = root->bp_index++;
+			root->breakpoints = new_bp;
+			gdb_send_command("OK");
+		} else if (type == '2') {
+			m68k_add_watchpoint(context, address, kind);
+			bp_def *new_bp = malloc(sizeof(bp_def));
+			new_bp->next = root->breakpoints;
+			new_bp->address = address;
+			new_bp->mask = kind;
+			new_bp->type = BP_TYPE_CPU_WATCH;
+			new_bp->index = root->bp_index++;
+			root->breakpoints = new_bp;
 			gdb_send_command("OK");
 		} else {
-			//watchpoints are not currently supported
+			//read and access watchpoints are not currently supported
 			gdb_send_command("");
 		}
 		break;
 	}
 	case 'z': {
 		uint8_t type = command[1];
+		char *after_address;
+		uint32_t address = strtoul(command+3, &after_address, 16);
+		uint32_t kind = strtoul(after_address +1, NULL, 16);
 		if (type < '2') {
-			uint32_t address = strtoul(command+3, NULL, 16);
 			remove_breakpoint(context, address);
-			bp_def **found = find_breakpoint(&breakpoints, address);
+			bp_def **found = find_breakpoint(&root->breakpoints, address, BP_TYPE_CPU);
 			if (*found)
 			{
 				bp_def * to_remove = *found;
@@ -257,8 +276,24 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 				free(to_remove);
 			}
 			gdb_send_command("OK");
+		} else if (type == '2') {
+			m68k_remove_watchpoint(context, address, kind);
+			bp_def **cur = &root->breakpoints;
+			while (*cur)
+			{
+				if ((*cur)->type == BP_TYPE_CPU_WATCH && (*cur)->address == address && (*cur)->mask == kind) {
+					break;
+				}
+				cur = &(*cur)->next;
+			}
+			if (*cur) {
+				bp_def *to_remove = *cur;
+				*cur = to_remove->next;
+				free(to_remove);
+			}
+			gdb_send_command("OK");
 		} else {
-			//watchpoints are not currently supported
+			//read and access watchpoints are not currently supported
 			gdb_send_command("");
 		}
 		break;
@@ -283,6 +318,8 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 		gdb_send_command(send_buf);
 		break;
 	}
+	case 'k':
+		exit(0);
 	case 'm': {
 		char * rest;
 		uint32_t address = strtoul(command+1, &rest, 16);
@@ -415,14 +452,10 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 				break;
 			case 's':
 			case 'S': {
+#ifndef NEW_CORE
 				m68kinst inst;
 				genesis_context *gen = context->system;
-				uint16_t * pc_ptr = get_native_pointer(pc, (void **)context->mem_pointers, &context->options->gen);
-				if (!pc_ptr) {
-					fatal_error("Entered gdb remote debugger stub at address %X\n", pc);
-				}
-				uint16_t * after_pc = m68k_decode(pc_ptr, &inst, pc & 0xFFFFFF);
-				uint32_t after = pc + (after_pc-pc_ptr)*2;
+				uint32_t after = m68k_decode(m68k_instruction_fetch, context, &inst, pc & 0xFFFFFF);
 
 				if (inst.op == M68K_RTS) {
 					after = (read_dma_value(context->aregs[7]/2) << 16) | read_dma_value(context->aregs[7]/2 + 1);
@@ -430,18 +463,19 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 					after = (read_dma_value((context->aregs[7]+2)/2) << 16) | read_dma_value((context->aregs[7]+2)/2 + 1);
 				} else if(m68k_is_branch(&inst)) {
 					if (inst.op == M68K_BCC && inst.extra.cond != COND_TRUE) {
-						branch_f = after;
-						branch_t = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
-						insert_breakpoint(context, branch_t, gdb_debug_enter);
+						root->branch_f = after;
+						root->branch_t = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
+						insert_breakpoint(context, root->branch_t, gdb_debug_enter);
 					} else if(inst.op == M68K_DBCC && inst.extra.cond != COND_FALSE) {
-						branch_t = after;
-						branch_f = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
-						insert_breakpoint(context, branch_f, gdb_debug_enter);
+						root->branch_t = after;
+						root->branch_f = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
+						insert_breakpoint(context, root->branch_f, gdb_debug_enter);
 					} else {
 						after = m68k_branch_target(&inst, context->dregs, context->aregs) & 0xFFFFFF;
 					}
 				}
 				insert_breakpoint(context, after, gdb_debug_enter);
+#endif
 
 				cont = 1;
 				expect_break_response = 1;
@@ -450,6 +484,8 @@ void gdb_run_command(m68k_context * context, uint32_t pc, char * command)
 			default:
 				goto not_impl;
 			}
+		} else if (!memcmp("Kill;", command+1, strlen("Kill;"))) {
+			exit(0);
 		} else {
 			goto not_impl;
 		}
@@ -466,28 +502,40 @@ not_impl:
 	fatal_error("Command %s is not implemented, exiting...\n", command);
 }
 
-void  gdb_debug_enter(m68k_context * context, uint32_t pc)
+void  gdb_debug_enter(void *vcontext, uint32_t pc)
 {
+	m68k_context *context = vcontext;
 	dfprintf(stderr, "Entered debugger at address %X\n", pc);
 	if (expect_break_response) {
-		gdb_send_command("S05");
+		if (context->wp_hit) {
+			context->wp_hit = 0;
+			char reply[128];
+			snprintf(reply, sizeof(reply), "T05watch:%X;", context->wp_hit_address);
+			gdb_send_command(reply);
+		} else {
+			gdb_send_command("S05");
+		}
 		expect_break_response = 0;
 	}
-	if ((pc & 0xFFFFFF) == branch_t) {
-		bp_def ** f_bp = find_breakpoint(&breakpoints, branch_f);
+	debug_root *root = find_root(context);
+	if (!root) {
+		fatal_error("Could not find debug root for CPU %p\n", context);
+	}
+	if ((pc & 0xFFFFFF) == root->branch_t) {
+		bp_def ** f_bp = find_breakpoint(&root->breakpoints, root->branch_f, BP_TYPE_CPU);
 		if (!*f_bp) {
-			remove_breakpoint(context, branch_f);
+			remove_breakpoint(context, root->branch_f);
 		}
-		branch_t = branch_f = 0;
-	} else if((pc & 0xFFFFFF) == branch_f) {
-		bp_def ** t_bp = find_breakpoint(&breakpoints, branch_t);
+		root->branch_t = root->branch_f = 0;
+	} else if((pc & 0xFFFFFF) == root->branch_f) {
+		bp_def ** t_bp = find_breakpoint(&root->breakpoints, root->branch_t, BP_TYPE_CPU);
 		if (!*t_bp) {
-			remove_breakpoint(context, branch_t);
+			remove_breakpoint(context, root->branch_t);
 		}
-		branch_t = branch_f = 0;
+		root->branch_t = root->branch_f = 0;
 	}
 	//Check if this is a user set breakpoint, or just a temporary one
-	bp_def ** this_bp = find_breakpoint(&breakpoints, pc & 0xFFFFFF);
+	bp_def ** this_bp = find_breakpoint(&root->breakpoints, pc & 0xFFFFFF, BP_TYPE_CPU);
 	if (!*this_bp) {
 		remove_breakpoint(context, pc & 0xFFFFFF);
 	}

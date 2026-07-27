@@ -16,9 +16,11 @@ enum {
 	SUBTYPE_XBOX,
 	SUBTYPE_X360,
 	SUBTYPE_XBONE,
+	SUBTYPE_XBOX_ELITE,
 	SUBTYPE_PS2,
 	SUBTYPE_PS3,
 	SUBTYPE_PS4,
+	SUBTYPE_PS5,
 	SUBTYPE_WIIU,
 	SUBTYPE_SWITCH,
 	SUBTYPE_GENESIS,
@@ -37,6 +39,8 @@ enum {
 
 typedef struct {
 	char const *name;
+	int16_t    stick_deadzone;
+	int16_t    trigger_deadzone;
 	uint8_t    type;
 	uint8_t    subtype;
 	uint8_t    variant;

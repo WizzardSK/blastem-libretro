@@ -14,37 +14,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-int headless = 1;
-void render_errorbox(char * title, char * buf)
+m68k_context *int_ack(m68k_context *context)
 {
+	return context;
 }
 
-void render_infobox(char * title, char * buf)
-{
-}
-
-#ifndef NEW_CORE
 m68k_context * sync_components(m68k_context * context, uint32_t address)
 {
-	if (context->current_cycle >= context->target_cycle) {
+#ifndef NEW_CORE
+	if (context->cycles >= context->target_cycle) {
 		puts("hit cycle limit");
 		exit(0);
 	}
 	if (context->status & M68K_STATUS_TRACE || context->trace_pending) {
-		context->target_cycle = context->current_cycle;
+		context->target_cycle = context->cycles;
 	}
+#endif
 	return context;
 }
-#endif
 
 m68k_context *reset_handler(m68k_context *context)
 {
 	m68k_print_regs(context);
-#ifdef NEW_CORE
 	printf("cycles: %d\n", context->cycles);
-#else
-	printf("cycles: %d\n", context->current_cycle);
-#endif
 	exit(0);
 	//unreachable
 	return context;
@@ -82,14 +74,14 @@ int main(int argc, char ** argv)
 	memmap[1].flags = MMAP_READ | MMAP_WRITE | MMAP_CODE;
 	memmap[1].buffer = malloc(64 * 1024);
 	memset(memmap[1].buffer, 0, 64 * 1024);
-	init_m68k_opts(&opts, memmap, 2, 1);
+	init_m68k_opts(&opts, memmap, 2, 1, sync_components, int_ack);
 	m68k_context * context = init_68k_context(&opts, reset_handler);
 	context->mem_pointers[0] = memmap[0].buffer;
 	context->mem_pointers[1] = memmap[1].buffer;
 #ifdef NEW_CORE
-	context->cycles = 40;
+	context->cycles = 20;
 #else
-	context->current_cycle = 40;
+	context->cycles = 40;
 	context->target_cycle = context->sync_cycle = 8000;
 #endif
 	m68k_reset(context);
