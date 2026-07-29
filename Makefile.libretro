@@ -48,6 +48,8 @@ else
 	CC ?=gcc
 ifeq ($(ARCH),x86)
 	ABI := i686
+else ifneq (,$(filter aarch64 arm64,$(UNAMEM)))
+	ABI := aarch64
 else
 	ABI := x86_64
 endif

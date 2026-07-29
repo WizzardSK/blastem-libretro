@@ -13,11 +13,29 @@
 void psg_init(psg_context * context, uint32_t master_clock, uint32_t clock_div)
 {
 	memset(context, 0, sizeof(*context));
-	context->audio = render_audio_source(master_clock, clock_div, 1);
+	context->audio = render_audio_source("PSG", master_clock, clock_div, 2);
 	context->clock_inc = clock_div;
 	for (int i = 0; i < 4; i++) {
 		context->volume[i] = 0xF;
 	}
+	context->pan = 0xFF;
+}
+
+void psg_enable_scope(psg_context *context, oscilloscope *scope, uint32_t master_clock)
+{
+#ifndef IS_LIB
+	context->scope = scope;
+	static const char *names[] = {
+		"PSG #1",
+		"PSG #2",
+		"PSG #3",
+		"PSG Noise",
+	};
+	for (int i = 0; i < 4; i++)
+	{
+		context->scope_channel[i] = scope_add_channel(scope, names[i], master_clock / context->clock_inc);
+	}
+#endif
 }
 
 void psg_free(psg_context *context)
@@ -90,6 +108,7 @@ static int16_t volume_table[16] = {
 void psg_run(psg_context * context, uint32_t cycles)
 {
 	while (context->cycles < cycles) {
+		uint8_t trigger[4] = {0,0,0,0};
 		for (int i = 0; i < 4; i++) {
 			if (context->counters[i]) {
 				context->counters[i] -= 1;
@@ -97,12 +116,13 @@ void psg_run(psg_context * context, uint32_t cycles)
 			if (!context->counters[i]) {
 				context->counters[i] = context->counter_load[i];
 				context->output_state[i] = !context->output_state[i];
+				trigger[i] = context->output_state[i];
 				if (i == 3 && context->output_state[i]) {
 					context->noise_out = context->lsfr & 1;
 					context->lsfr = (context->lsfr >> 1) | (context->lsfr << 15);
 					if (context->noise_type) {
 						//white noise
-						if (context->lsfr & 0x40) {
+						if (context->lsfr & 0x4) {
 							context->lsfr ^= 0x8000;
 						}
 					}
@@ -110,18 +130,47 @@ void psg_run(psg_context * context, uint32_t cycles)
 			}
 		}
 
-		int16_t accum = 0;
-		
+		int16_t left_accum = 0, right_accum = 0;
+		uint8_t pan_left = 0x10, pan_right = 0x1;
+
+		int16_t value;
 		for (int i = 0; i < 3; i++) {
 			if (context->output_state[i]) {
-				accum += volume_table[context->volume[i]];
+				value = volume_table[context->volume[i]];
+				if (context->pan & pan_left) {
+					left_accum += value;
+				}
+				if (context->pan & pan_right) {
+					right_accum += value;
+				}
+			} else {
+				value = 0;
+			}
+			pan_left <<= 1;
+			pan_right <<= 1;
+#ifndef IS_LIB
+			if (context->scope) {
+				scope_add_sample(context->scope, context->scope_channel[i], value, trigger[i]);
+			}
+#endif
+		}
+		value = 0;
+		if (context->noise_out) {
+			value = volume_table[context->volume[3]];
+			if (context->pan & pan_left) {
+				left_accum += value;
+			}
+			if (context->pan & pan_right) {
+				right_accum += value;
 			}
 		}
-		if (context->noise_out) {
-			accum += volume_table[context->volume[3]];
+#ifndef IS_LIB
+		if (context->scope) {
+			scope_add_sample(context->scope, context->scope_channel[3], value, trigger[3]);
 		}
-		
-		render_put_mono_sample(context->audio, accum);
+#endif
+
+		render_put_stereo_sample(context->audio, left_accum, right_accum);
 
 		context->cycles += context->clock_inc;
 	}
@@ -148,6 +197,9 @@ void psg_vgm_log(psg_context *context, uint32_t master_clock, vgm_writer *vgm)
 			vgm_sn76489_write(context->vgm, context->cycles, (context->counter_load[chan] & 0xF) | base);
 			vgm_sn76489_write(context->vgm, context->cycles, context->counter_load[chan] >> 4 & 0x3F);
 		}
+	}
+	if (context->pan != 0xFF) {
+		vgm_gg_pan_write(context->vgm, context->cycles, context->pan);
 	}
 }
 

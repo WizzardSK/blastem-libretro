@@ -94,7 +94,7 @@ void m68k_write_size(m68k_options *opts, uint8_t size, uint8_t lowfirst)
 void m68k_save_result(m68kinst * inst, m68k_options * opts)
 {
 	if (inst->dst.addr_mode != MODE_REG && inst->dst.addr_mode != MODE_AREG && inst->dst.addr_mode != MODE_UNUSED) {
-		if (inst->dst.addr_mode == MODE_AREG_PREDEC && 
+		if (inst->dst.addr_mode == MODE_AREG_PREDEC &&
 			((inst->src.addr_mode == MODE_AREG_PREDEC && inst->op != M68K_MOVE) || (inst->op == M68K_NBCD))
 		) {
 			areg_to_native(opts, inst->dst.params.regs.pri, opts->gen.scratch2);
@@ -191,7 +191,7 @@ void jump_m68k_abs(m68k_options * opts, uint32_t address)
 	code_info *code = &opts->gen.code;
 	code_ptr dest_addr = get_native_address(opts, address);
 	if (!dest_addr) {
-		opts->gen.deferred = defer_address(opts->gen.deferred, address, code->cur + 1);
+		opts->gen.deferred = defer_address(opts->gen.deferred, address & 0xFFFFFF, code->cur + 1);
 		//dummy address to be replaced later, make sure it generates a 4-byte displacement
 		dest_addr = code->cur + 256;
 	}
@@ -227,11 +227,14 @@ static void translate_m68k_jmp_jsr(m68k_options * opts, m68kinst * inst)
 			push_const(opts, inst->address+2);
 		}
 		areg_to_native(opts, inst->src.params.regs.pri, opts->gen.scratch1);
+		if (is_jsr && inst->src.params.regs.pri == 7) {
+			addi_native(opts, 4, opts->gen.scratch1);
+		}
 		call(code, opts->native_addr);
 		jmp_r(code, opts->gen.scratch1);
 		break;
 	case MODE_AREG_DISPLACE:
-		cycles(&opts->gen, BUS*2);
+		cycles(&opts->gen, BUS*2 + 2);
 		if (is_jsr) {
 			push_const(opts, inst->address+4);
 		}
@@ -240,7 +243,7 @@ static void translate_m68k_jmp_jsr(m68k_options * opts, m68kinst * inst)
 		jmp_r(code, opts->gen.scratch1);
 		break;
 	case MODE_AREG_INDEX_DISP8:
-		cycles(&opts->gen, BUS*3);//TODO: CHeck that this is correct
+		cycles(&opts->gen, BUS*3 + 2);
 		if (is_jsr) {
 			push_const(opts, inst->address+4);
 		}
@@ -257,7 +260,7 @@ static void translate_m68k_jmp_jsr(m68k_options * opts, m68kinst * inst)
 		jump_m68k_abs(opts, inst->src.params.regs.displacement + inst->address + 2);
 		break;
 	case MODE_PC_INDEX_DISP8:
-		cycles(&opts->gen, BUS*3);//TODO: CHeck that this is correct
+		cycles(&opts->gen, BUS*3 + 2);
 		if (is_jsr) {
 			push_const(opts, inst->address+4);
 		}
@@ -332,6 +335,7 @@ static void translate_m68k_rtr(m68k_options *opts, m68kinst * inst)
 	areg_to_native(opts, 7, opts->gen.scratch1);
 	call(code, opts->read_32);
 	addi_areg(opts, 4, 7);
+	cycles(&opts->gen, 2*BUS);
 	//Get native address and jump to it
 	call(code, opts->native_addr);
 	jmp_r(code, opts->gen.scratch1);
@@ -362,7 +366,6 @@ static void translate_m68k_trap(m68k_options *opts, m68kinst *inst)
 static void translate_m68k_illegal(m68k_options *opts, m68kinst *inst)
 {
 	code_info *code = &opts->gen.code;
-	cycles(&opts->gen, BUS);
 	ldi_native(opts, VECTOR_ILLEGAL_INST, opts->gen.scratch2);
 	ldi_native(opts, inst->address, opts->gen.scratch1);
 	jmp(code, opts->trap);
@@ -489,7 +492,7 @@ static code_ptr get_movem_impl(m68k_options *opts, m68kinst *inst)
 	}
 	opts->extra_code = opts->gen.code;
 	opts->gen.code = tmp;
-	
+
 	rts(&opts->extra_code);
 	return impl;
 }
@@ -499,7 +502,7 @@ static void translate_m68k_movem(m68k_options * opts, m68kinst * inst)
 	code_info *code = &opts->gen.code;
 	uint8_t early_cycles;
 	uint16_t num_regs = inst->src.addr_mode == MODE_REG ? inst->src.params.immed : inst->dst.params.immed;
-	{	
+	{
 		//TODO: Move this popcount alg to a utility function
 		uint16_t a = (num_regs & 0b1010101010101010) >> 1;
 		uint16_t b = num_regs & 0b0101010101010101;
@@ -549,7 +552,7 @@ static void translate_m68k_movem(m68k_options * opts, m68kinst * inst)
 			m68k_disasm(inst, disasm_buf);
 			fatal_error("%X: %s\naddress mode %d not implemented (movem dst)\n", inst->address, disasm_buf, inst->dst.addr_mode);
 		}
-		
+
 		cycles(&opts->gen, early_cycles);
 		if (num_regs <= 9) {
 			translate_movem_regtomem_reglist(opts, inst);
@@ -596,7 +599,7 @@ static void translate_m68k_movem(m68k_options * opts, m68kinst * inst)
 			fatal_error("%X: %s\naddress mode %d not implemented (movem src)\n", inst->address, disasm_buf, inst->src.addr_mode);
 		}
 		cycles(&opts->gen, early_cycles);
-		
+
 		if (num_regs <= 9) {
 			translate_movem_memtoreg_reglist(opts, inst);
 		} else {
@@ -625,7 +628,7 @@ void swap_ssp_usp(m68k_options * opts)
 static void translate_m68k_rte(m68k_options *opts, m68kinst *inst)
 {
 	m68k_trap_if_not_supervisor(opts, inst);
-	
+
 	code_info *code = &opts->gen.code;
 	//Read saved SR
 	areg_to_native(opts, 7, opts->gen.scratch1);
@@ -646,7 +649,7 @@ static void translate_m68k_rte(m68k_options *opts, m68kinst *inst)
 code_ptr get_native_address(m68k_options *opts, uint32_t address)
 {
 	native_map_slot * native_code_map = opts->gen.native_code_map;
-	
+
 	memmap_chunk const *mem_chunk = find_map_chunk(address, &opts->gen, 0, NULL);
 	if (mem_chunk) {
 		//calculate the lowest alias for this address
@@ -667,7 +670,7 @@ code_ptr get_native_address(m68k_options *opts, uint32_t address)
 
 code_ptr get_native_from_context(m68k_context * context, uint32_t address)
 {
-	return get_native_address(context->options, address);
+	return get_native_address(context->opts, address);
 }
 
 uint32_t get_instruction_start(m68k_options *opts, uint32_t address)
@@ -680,7 +683,7 @@ uint32_t get_instruction_start(m68k_options *opts, uint32_t address)
 	} else {
 		address &= opts->gen.address_mask;
 	}
-	
+
 	uint32_t chunk = address / NATIVE_CHUNK_SIZE;
 	if (!native_code_map[chunk].base) {
 		return 0;
@@ -700,7 +703,7 @@ uint32_t get_instruction_start(m68k_options *opts, uint32_t address)
 
 static void map_native_address(m68k_context * context, uint32_t address, code_ptr native_addr, uint8_t size, uint8_t native_size)
 {
-	m68k_options * opts = context->options;
+	m68k_options * opts = context->opts;
 	native_map_slot * native_code_map = opts->gen.native_code_map;
 	uint32_t meta_off;
 	memmap_chunk const *mem_chunk = find_map_chunk(address, &opts->gen, MMAP_CODE, &meta_off);
@@ -728,7 +731,7 @@ static void map_native_address(m68k_context * context, uint32_t address, code_pt
 	} else {
 		address &= opts->gen.address_mask;
 	}
-	
+
 	uint32_t chunk = address / NATIVE_CHUNK_SIZE;
 	if (!native_code_map[chunk].base) {
 		native_code_map[chunk].base = native_addr;
@@ -768,12 +771,13 @@ uint8_t m68k_is_terminal(m68kinst * inst)
 {
 	return inst->op == M68K_RTS || inst->op == M68K_RTE || inst->op == M68K_RTR || inst->op == M68K_JMP
 		|| inst->op == M68K_TRAP || inst->op == M68K_ILLEGAL || inst->op == M68K_INVALID
+		|| inst->op == M68K_F_LINE_TRAP || inst->op == M68K_A_LINE_TRAP
 		|| (inst->op == M68K_BCC && inst->extra.cond == COND_TRUE);
 }
 
 static void m68k_handle_deferred(m68k_context * context)
 {
-	m68k_options * opts = context->options;
+	m68k_options * opts = context->opts;
 	process_deferred(&opts->gen.deferred, context, (native_addr_func)get_native_from_context);
 	if (opts->gen.deferred) {
 		translate_m68k_stream(opts->gen.deferred->address, context);
@@ -782,8 +786,8 @@ static void m68k_handle_deferred(m68k_context * context)
 
 uint16_t m68k_get_ir(m68k_context *context)
 {
-	uint32_t inst_addr = get_instruction_start(context->options, context->last_prefetch_address-2);
-	uint16_t *native_addr = get_native_pointer(inst_addr, (void **)context->mem_pointers, &context->options->gen);
+	uint32_t inst_addr = get_instruction_start(context->opts, context->last_prefetch_address-2);
+	uint16_t *native_addr = get_native_pointer(inst_addr, (void **)context->mem_pointers, &context->opts->gen);
 	if (native_addr) {
 		return *native_addr;
 	}
@@ -791,7 +795,7 @@ uint16_t m68k_get_ir(m68k_context *context)
 	return 0xFFFF;
 }
 
-static m68k_debug_handler find_breakpoint(m68k_context *context, uint32_t address)
+static debug_handler find_breakpoint(m68k_context *context, uint32_t address)
 {
 	for (uint32_t i = 0; i < context->num_breakpoints; i++)
 	{
@@ -802,7 +806,7 @@ static m68k_debug_handler find_breakpoint(m68k_context *context, uint32_t addres
 	return NULL;
 }
 
-void insert_breakpoint(m68k_context * context, uint32_t address, m68k_debug_handler bp_handler)
+void insert_breakpoint(m68k_context * context, uint32_t address, debug_handler bp_handler)
 {
 	if (!find_breakpoint(context, address)) {
 		if (context->bp_storage == context->num_breakpoints) {
@@ -810,9 +814,9 @@ void insert_breakpoint(m68k_context * context, uint32_t address, m68k_debug_hand
 			if (context->bp_storage < 4) {
 				context->bp_storage = 4;
 			}
-			context->breakpoints = realloc(context->breakpoints, context->bp_storage * sizeof(m68k_breakpoint));
+			context->breakpoints = realloc(context->breakpoints, context->bp_storage * sizeof(breakpoint));
 		}
-		context->breakpoints[context->num_breakpoints++] = (m68k_breakpoint){
+		context->breakpoints[context->num_breakpoints++] = (breakpoint){
 			.handler = bp_handler,
 			.address = address
 		};
@@ -822,7 +826,7 @@ void insert_breakpoint(m68k_context * context, uint32_t address, m68k_debug_hand
 
 m68k_context *m68k_bp_dispatcher(m68k_context *context, uint32_t address)
 {
-	m68k_debug_handler handler = find_breakpoint(context, address);
+	debug_handler handler = find_breakpoint(context, address);
 	if (handler) {
 		handler(context, address);
 	} else {
@@ -830,8 +834,133 @@ m68k_context *m68k_bp_dispatcher(m68k_context *context, uint32_t address)
 		warning("Spurious breakpoing at %X\n", address);
 		remove_breakpoint(context, address);
 	}
-	
+
 	return context;
+}
+
+static m68k_watchpoint *m68k_find_watchpoint(uint32_t address, m68k_context *context)
+{
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (address >= context->watchpoints[i].start && address <= context->watchpoints[i].end) {
+			return context->watchpoints + i;
+		}
+	}
+	return NULL;
+}
+
+static void *m68k_watchpoint_check16(uint32_t address, void *vcontext, uint16_t value)
+{
+	m68k_context *context = vcontext;
+	m68k_watchpoint *watch = m68k_find_watchpoint(address, context);
+	if (!watch) {
+		return vcontext;
+	}
+	if (watch->check_change) {
+		uint16_t old = read_word(address, (void **)context->mem_pointers, &context->opts->gen, context);
+		if (old == value) {
+			return vcontext;
+		}
+		context->wp_old_value = old;
+	} else {
+		context->wp_old_value = value;
+	}
+	context->wp_hit_address = address;
+	context->wp_hit_value = value;
+	context->wp_hit = 1;
+	context->target_cycle = context->sync_cycle = context->cycles;
+	system_header *system = context->system;
+	return vcontext;
+}
+
+static void *m68k_watchpoint_check8(uint32_t address, void *vcontext, uint8_t value)
+{
+	m68k_context *context = vcontext;
+	m68k_watchpoint *watch = m68k_find_watchpoint(address, context);
+	if (!watch) {
+		return vcontext;
+	}
+	if (watch->check_change) {
+		uint8_t old = read_byte(address, (void **)context->mem_pointers, &context->opts->gen, context);
+		if (old == value) {
+			return vcontext;
+		}
+		context->wp_old_value = old;
+	} else {
+		context->wp_old_value = value;
+	}
+	context->wp_hit_address = address;
+	context->wp_hit_value = value;
+	context->wp_hit = 1;
+	context->target_cycle = context->sync_cycle = context->cycles;
+	system_header *system = context->system;
+	return vcontext;
+}
+
+static void m68k_enable_watchpoints(m68k_context *context)
+{
+	if (context->opts->gen.check_watchpoints_16) {
+		//already enabled
+		return;
+	}
+	context->opts->gen.check_watchpoints_16 = m68k_watchpoint_check16;
+	context->opts->gen.check_watchpoints_8 = m68k_watchpoint_check8;
+	//re-generate write handlers with watchpoints enabled
+	code_ptr new_write16 = gen_mem_fun(&context->opts->gen, context->opts->gen.memmap, context->opts->gen.memmap_chunks, WRITE_16, NULL, 0);
+	code_ptr new_write8 = gen_mem_fun(&context->opts->gen, context->opts->gen.memmap, context->opts->gen.memmap_chunks, WRITE_8, NULL, 0);
+
+	//patch old write handlers to point to the new ones
+	code_info code = {
+		.cur = context->opts->write_16,
+		.last = context->opts->write_16 + 256
+	};
+	jmp(&code, new_write16);
+	code.cur = context->opts->write_8;
+	code.last = code.cur + 256;
+	jmp(&code, new_write8);
+	context->opts->write_16 = new_write16;
+	context->opts->write_8 = new_write8;
+}
+
+void m68k_add_watchpoint(m68k_context *context, uint32_t address, uint32_t size)
+{
+	uint32_t end = address + size - 1;
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (context->watchpoints[i].start == address && context->watchpoints[i].end == end) {
+			return;
+		}
+	}
+	m68k_enable_watchpoints(context);
+	if (context->wp_storage == context->num_watchpoints) {
+		context->wp_storage = context->wp_storage ? context->wp_storage * 2 : 4;
+		context->watchpoints = realloc(context->watchpoints, context->wp_storage * sizeof(m68k_watchpoint));
+	}
+	const memmap_chunk *chunk = find_map_chunk(address, &context->opts->gen, 0, NULL);
+	context->watchpoints[context->num_watchpoints++] = (m68k_watchpoint){
+		.start = address,
+		.end = end,
+		.check_change = chunk && (chunk->flags & MMAP_READ)
+	};
+	if (context->watchpoint_min > address) {
+		context->watchpoint_min = address;
+	}
+	if (context->watchpoint_max < end) {
+		context->watchpoint_max = end;
+	}
+}
+
+void m68k_remove_watchpoint(m68k_context *context, uint32_t address, uint32_t size)
+{
+	uint32_t end = address + size - 1;
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (context->watchpoints[i].start == address && context->watchpoints[i].end == end) {
+			context->watchpoints[i] = context->watchpoints[context->num_watchpoints-1];
+			context->num_watchpoints--;
+			return;
+		}
+	}
 }
 
 typedef enum {
@@ -951,22 +1080,22 @@ static impl_info m68k_impls[] = {
 
 static void translate_m68k(m68k_context *context, m68kinst * inst)
 {
-	m68k_options * opts = context->options;
+	m68k_options * opts = context->opts;
 	if (inst->address & 1) {
 		translate_m68k_odd(opts, inst);
 		return;
 	}
 	code_ptr start = opts->gen.code.cur;
 	check_cycles_int(&opts->gen, inst->address);
-	
-	m68k_debug_handler bp;
+
+	debug_handler bp;
 	if ((bp = find_breakpoint(context, inst->address))) {
 		m68k_breakpoint_patch(context, inst->address, bp, start);
 	}
-	
-	//log_address(&opts->gen, inst->address, "M68K: %X @ %d\n");
+
+	//log_address(&opts->gen, inst->address, opts->gen.clock_divider == 4 ? "Sub M68k: %X @ %d\n" : "Main M68K: %X @ %d\n");
 	if (
-		(inst->src.addr_mode > MODE_AREG && inst->src.addr_mode < MODE_IMMEDIATE) 
+		(inst->src.addr_mode > MODE_AREG && inst->src.addr_mode < MODE_IMMEDIATE)
 		|| (inst->dst.addr_mode > MODE_AREG && inst->dst.addr_mode < MODE_IMMEDIATE)
 		|| (inst->op == M68K_BCC && (inst->src.params.immed & 1))
 	) {
@@ -1006,40 +1135,72 @@ static void translate_m68k(m68k_context *context, m68kinst * inst)
 	}
 }
 
+uint16_t m68k_instruction_fetch(uint32_t address, void *vcontext)
+{
+	m68k_context *context = vcontext;
+	uint16_t *ptr = get_native_pointer(address, (void **)context->mem_pointers, &context->opts->gen);
+	if (ptr) {
+		return *ptr;
+	}
+	return read_word(address, (void **)context->mem_pointers, &context->opts->gen, context);
+}
+
 void translate_m68k_stream(uint32_t address, m68k_context * context)
 {
 	m68kinst instbuf;
-	m68k_options * opts = context->options;
+	m68k_options * opts = context->opts;
 	code_info *code = &opts->gen.code;
 	if(get_native_address(opts, address)) {
 		return;
 	}
-	uint16_t *encoded, *next;
+	memmap_chunk const *starting_chunk = NULL;
+	uint32_t next_address;
 	do {
 		if (opts->address_log) {
 			fprintf(opts->address_log, "%X\n", address);
 			fflush(opts->address_log);
 		}
 		do {
-			encoded = get_native_pointer(address, (void **)context->mem_pointers, &opts->gen);
-			if (!encoded) {
+			code_ptr existing = get_native_address(opts, address);
+			if (existing) {
+				jmp(code, existing);
+				break;
+			}
+			memmap_chunk const *chunk = find_map_chunk(address, &opts->gen, 0, NULL);
+			if (!chunk) {
 				code_ptr start = code->cur;
 				translate_out_of_bounds(opts, address);
 				code_ptr after = code->cur;
 				map_native_address(context, address, start, 2, after-start);
 				break;
 			}
-			code_ptr existing = get_native_address(opts, address);
-			if (existing) {
-				jmp(code, existing);
+			if (!(chunk->flags & MMAP_READ)) {
+				code_ptr start = code->cur;
+				if (chunk->flags & MMAP_CODE) {
+					defer_translation(&opts->gen, address, opts->retrans_stub);
+				} else {
+					translate_out_of_bounds(opts, address);
+				}
+				code_ptr after = code->cur;
+				map_native_address(context, address, start, 2, after-start);
 				break;
 			}
-			next = m68k_decode(encoded, &instbuf, address);
-			if (instbuf.op == M68K_INVALID) {
-				instbuf.src.params.immed = *encoded;
+			if (!starting_chunk) {
+				starting_chunk = chunk;
+			} else if (starting_chunk != chunk) {
+				if (chunk->flags & MMAP_CODE) {
+					code_ptr start = code->cur;
+					defer_translation(&opts->gen, address, opts->retrans_stub);
+					code_ptr after = code->cur;
+					map_native_address(context, address, start, 2, after-start);
+					break;
+				} else {
+					starting_chunk = chunk;
+				}
 			}
-			uint16_t m68k_size = (next-encoded)*2;
-			address += m68k_size;
+			next_address = m68k_decode(m68k_instruction_fetch, context, &instbuf, address);
+			uint16_t m68k_size = next_address - address;
+			address = next_address;
 			//char disbuf[1024];
 			//m68k_disasm(&instbuf, disbuf);
 			//printf("%X: %s\n", instbuf.address, disbuf);
@@ -1060,15 +1221,14 @@ void translate_m68k_stream(uint32_t address, m68k_context * context)
 
 void * m68k_retranslate_inst(uint32_t address, m68k_context * context)
 {
-	m68k_options * opts = context->options;
+	m68k_options * opts = context->opts;
 	code_info *code = &opts->gen.code;
 	uint8_t orig_size = get_native_inst_size(opts, address);
-	code_ptr orig_start = get_native_address(context->options, address);
+	code_ptr orig_start = get_native_address(context->opts, address);
 	uint32_t orig = address;
 	code_info orig_code = {orig_start, orig_start + orig_size + 5, 0};
-	uint16_t *after, *inst = get_native_pointer(address, (void **)context->mem_pointers, &opts->gen);
 	m68kinst instbuf;
-	after = m68k_decode(inst, &instbuf, orig);
+	uint32_t after_address = m68k_decode(m68k_instruction_fetch, context, &instbuf, orig);
 	if (orig_size != MAX_NATIVE_SIZE) {
 		deferred_addr * orig_deferred = opts->gen.deferred;
 
@@ -1103,13 +1263,13 @@ void * m68k_retranslate_inst(uint32_t address, m68k_context * context)
 			}
 		}*/
 
-		map_native_address(context, instbuf.address, native_start, (after-inst)*2, MAX_NATIVE_SIZE);
+		map_native_address(context, instbuf.address, native_start, after_address - orig, MAX_NATIVE_SIZE);
 
 		jmp(&orig_code, native_start);
 		if (!m68k_is_terminal(&instbuf)) {
 			code_ptr native_end = code->cur;
 			code->cur = native_start + MAX_NATIVE_SIZE;
-			code_ptr rest = get_native_address_trans(context, orig + (after-inst)*2);
+			code_ptr rest = get_native_address_trans(context, after_address);
 			code_info tmp_code = {
 				.cur = native_end,
 				.last = native_start + MAX_NATIVE_SIZE,
@@ -1125,10 +1285,12 @@ void * m68k_retranslate_inst(uint32_t address, m68k_context * context)
 		code_info tmp = *code;
 		*code = orig_code;
 		translate_m68k(context, &instbuf);
+		// 68K instruction may not be the same size as the one when we initial switched to a new native address
+		map_native_address(context, instbuf.address, orig_start, after_address - orig, MAX_NATIVE_SIZE);
 		orig_code = *code;
 		*code = tmp;
 		if (!m68k_is_terminal(&instbuf)) {
-			jmp(&orig_code, get_native_address_trans(context, orig + (after-inst)*2));
+			jmp(&orig_code, get_native_address_trans(context, after_address));
 		}
 		m68k_handle_deferred(context);
 		return orig_start;
@@ -1137,10 +1299,10 @@ void * m68k_retranslate_inst(uint32_t address, m68k_context * context)
 
 code_ptr get_native_address_trans(m68k_context * context, uint32_t address)
 {
-	code_ptr ret = get_native_address(context->options, address);
+	code_ptr ret = get_native_address(context->opts, address);
 	if (!ret) {
 		translate_m68k_stream(address, context);
-		ret = get_native_address(context->options, address);
+		ret = get_native_address(context->opts, address);
 	}
 	return ret;
 }
@@ -1157,29 +1319,31 @@ void remove_breakpoint(m68k_context * context, uint32_t address)
 			break;
 		}
 	}
-	code_ptr native = get_native_address(context->options, address);
+	code_ptr native = get_native_address(context->opts, address);
 	if (!native) {
 		return;
 	}
-	code_info tmp = context->options->gen.code;
-	context->options->gen.code.cur = native;
-	context->options->gen.code.last = native + MAX_NATIVE_SIZE;
-	check_cycles_int(&context->options->gen, address);
-	context->options->gen.code = tmp;
+	code_info tmp = context->opts->gen.code;
+	context->opts->gen.code.cur = native;
+	context->opts->gen.code.last = native + MAX_NATIVE_SIZE;
+	check_cycles_int(&context->opts->gen, address);
+	context->opts->gen.code = tmp;
 }
 
 void start_68k_context(m68k_context * context, uint32_t address)
 {
 	code_ptr addr = get_native_address_trans(context, address);
-	m68k_options * options = context->options;
+	m68k_options * options = context->opts;
 	options->start_context(addr, context);
 }
 
 void resume_68k(m68k_context *context)
 {
 	code_ptr addr = context->resume_pc;
-	context->resume_pc = NULL;
-	m68k_options * options = context->options;
+	if (!context->stack_storage_count) {
+		context->resume_pc = NULL;
+	}
+	m68k_options * options = context->opts;
 	context->should_return = 0;
 	options->start_context(addr, context);
 }
@@ -1187,16 +1351,18 @@ void resume_68k(m68k_context *context)
 void m68k_reset(m68k_context * context)
 {
 	//TODO: Actually execute the M68K reset vector rather than simulating some of its behavior
-	uint16_t *reset_vec = get_native_pointer(0, (void **)context->mem_pointers, &context->options->gen);
+	uint16_t *reset_vec = get_native_pointer(0, (void **)context->mem_pointers, &context->opts->gen);
 	if (!(context->status & 0x20)) {
 		//switching from user to system mode so swap stack pointers
 		context->aregs[8] = context->aregs[7];
 	}
+	context->resume_pc = NULL;
+	context->stack_storage_count = 0;
 	context->status = 0x27;
-	context->aregs[7] = reset_vec[0] << 16 | reset_vec[1];
-	uint32_t address = reset_vec[2] << 16 | reset_vec[3];
+	context->aregs[7] = ((uint32_t)reset_vec[0]) << 16 | reset_vec[1];
+	uint32_t address = ((uint32_t)reset_vec[2]) << 16 | reset_vec[3];
 	//interrupt mask may have changed so force a sync
-	sync_components(context, address);
+	context->opts->sync_components(context, address);
 	start_68k_context(context, address);
 }
 
@@ -1224,7 +1390,7 @@ void m68k_options_free(m68k_options *opts)
 m68k_context * init_68k_context(m68k_options * opts, m68k_reset_handler reset_handler)
 {
 	m68k_context * context = calloc(1, sizeof(m68k_context) + ram_size(&opts->gen) / (1 << opts->gen.ram_flags_shift) / 8);
-	context->options = opts;
+	context->opts = opts;
 	context->int_cycle = CYCLE_NEVER;
 	context->status = 0x27;
 	context->reset_handler = (code_ptr)reset_handler;
@@ -1248,7 +1414,7 @@ void m68k_serialize(m68k_context *context, uint32_t pc, serialize_buffer *buf)
 		sr |= context->flags[flag] != 0;
 	}
 	save_int16(buf, sr);
-	save_int32(buf, context->current_cycle);
+	save_int32(buf, context->cycles);
 	save_int32(buf, context->int_cycle);
 	save_int8(buf, context->int_num);
 	save_int8(buf, context->int_pending);
@@ -1275,9 +1441,10 @@ void m68k_deserialize(deserialize_buffer *buf, void *vcontext)
 		context->flags[flag] = sr & 1;
 		sr >>= 1;
 	}
-	context->current_cycle = load_int32(buf);
+	context->cycles = load_int32(buf);
 	context->int_cycle = load_int32(buf);
 	context->int_num = load_int8(buf);
 	context->int_pending = load_int8(buf);
 	context->trace_pending = load_int8(buf);
+	context->stack_storage_count = 0;
 }

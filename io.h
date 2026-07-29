@@ -29,7 +29,8 @@ enum {
 	IO_HEARTBEAT_TRAINER
 };
 
-typedef struct {
+typedef struct io_port io_port;
+struct io_port {
 	union {
 		struct {
 			uint32_t timeout_cycle;
@@ -76,6 +77,17 @@ typedef struct {
 			uint8_t  cmd;
 			uint8_t  remaining_bytes;
 		} heartbeat_trainer;
+		struct {
+			io_port  *ports;
+			uint32_t ready_cycle;
+			uint8_t  tr_counter;
+			uint8_t  tap_num;
+			uint8_t  device_ids[4];
+			uint8_t  data[4];
+			uint8_t  cur_port;
+			uint8_t  port_start;
+			uint8_t  reset_state;
+		} multitap;
 	} device;
 	uint8_t  output;
 	uint8_t  control;
@@ -92,7 +104,7 @@ typedef struct {
 	uint8_t  serial_receiving;
 	uint8_t  serial_ctrl;
 	uint8_t  device_type;
-} io_port;
+};
 
 typedef struct {
 	io_port	ports[3];
@@ -155,6 +167,7 @@ void io_mouse_motion_relative(sega_io *io, uint8_t mouse_num, int32_t x, int32_t
 void io_keyboard_down(sega_io *io, uint8_t scancode);
 void io_keyboard_up(sega_io *io, uint8_t scancode);
 uint8_t io_has_keyboard(sega_io *io);
+io_port *find_gamepad(sega_io *io, uint8_t gamepad_num);
 
 extern const char * device_type_names[];
 

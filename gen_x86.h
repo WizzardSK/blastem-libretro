@@ -33,6 +33,35 @@ enum {
 };
 
 enum {
+	MM0 = 0,
+	MM1,
+	MM2,
+	MM3,
+	MM4,
+	MM5,
+	MM7
+};
+
+enum {
+	XMM0 = 0,
+	XMM1,
+	XMM2,
+	XMM3,
+	XMM4,
+	XMM5,
+	XMM6,
+	XMM7,
+	XMM8,
+	XMM9,
+	XMM10,
+	XMM11,
+	XMM12,
+	XMM13,
+	XMM14,
+	XMM15
+};
+
+enum {
 	CC_O = 0,
 	CC_NO,
 	CC_C,
@@ -218,12 +247,40 @@ void btc_ir(code_info *code, uint8_t val, uint8_t dst, uint8_t size);
 void btc_irdisp(code_info *code, uint8_t val, uint8_t dst_base, int32_t dst_disp, uint8_t size);
 void jcc(code_info *code, uint8_t cc, code_ptr dest);
 void jmp_rind(code_info *code, uint8_t dst);
+void jmp_nocheck(code_info *code, code_ptr dest);
 void call_noalign(code_info *code, code_ptr fun);
 void call_r(code_info *code, uint8_t dst);
 void retn(code_info *code);
 void cdq(code_info *code);
 void loop(code_info *code, code_ptr dst);
+void dec_r(code_info *code, uint8_t dst, uint8_t size);
+void movdqa_rrind(code_info *code, uint8_t src, uint8_t dst);
+void pshuflw_rindr(code_info *code, uint8_t src, uint8_t dst, uint8_t shuff);
+void pshuflw_rdispr(code_info *code, uint8_t src, int32_t src_disp, uint8_t dst, uint8_t shuff);
+void pshuflw_rindexr(code_info *code, uint8_t src_base, uint8_t src_index, uint8_t scale, uint8_t dst, uint8_t shuff);
+void pshufhw_rr(code_info *code, uint8_t src, uint8_t dst, uint8_t shuff);
+void pshufw_rindr(code_info *code, uint8_t src, uint8_t dst, uint8_t shuff);
+void pshufw_rdispr(code_info *code, uint8_t src, int32_t src_disp, uint8_t dst, uint8_t shuff);
+void movq_rrind(code_info *code, uint8_t src, uint8_t dst);
+void movq_rrdisp(code_info *code, uint8_t src, uint8_t dst, int32_t dst_disp);
+void emms(code_info *code);
+
 uint8_t is_mov_ir(code_ptr inst);
+uint8_t cpu_has_sse2(void);
+uint8_t cpu_has_popcnt(void);
+
+#define ALLOC_CODE_RETRY_POINT code_info tmp_alloc_retry = *code; alloc_code_retry:
+#define ALLOC_CODE_RETRY_VAR code_info tmp_alloc_retry
+#define ALLOC_CODE_RETRY_POINT_NO_VAR tmp_alloc_retry = *code; alloc_code_retry:
+#define CHECK_BRANCH_DEST(ptr) if (code->cur - ((ptr) + 1) > 127 || code->cur - ((ptr) + 1) < -128) {\
+		code_info next_alloc_retry = *code;\
+		*code = tmp_alloc_retry;\
+		next_alloc_retry.cur = next_alloc_retry.last - (CODE_ALLOC_SIZE-RESERVE_WORDS);\
+		jmp_nocheck(code, next_alloc_retry.cur);\
+		*code = next_alloc_retry;\
+		goto alloc_code_retry;\
+	}\
+	*(ptr) = code->cur - ((ptr) + 1);
 
 #endif //GEN_X86_H_
 

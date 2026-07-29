@@ -8,15 +8,20 @@
 
 #include <stdint.h>
 #include "system.h"
-#include "m68k_core.h"
 #ifdef NEW_CORE
+#include "m68k.h"
 #include "z80.h"
 #else
+#include "m68k_core.h"
 #include "z80_to_x86.h"
 #endif
 #include "ym2612.h"
+#include "ymf262.h"
+#include "32x.h"
 #include "vdp.h"
 #include "psg.h"
+#include "pico_pcm.h"
+#include "ymz263b.h"
 #include "io.h"
 #include "romdb.h"
 #include "arena.h"
@@ -31,10 +36,15 @@ struct genesis_context {
 	vdp_context     *vdp;
 	ym2612_context  *ym;
 	psg_context     *psg;
+	pico_pcm        *adpcm;
+	ymz263b         *ymz;
+	ymf262_context  *opl;
 	uint16_t        *cart;
 	uint16_t        *lock_on;
 	uint16_t        *work_ram;
 	uint8_t         *zram;
+	void            *expansion;
+	s32x            *mars;
 	void            *extra;
 	uint8_t         *save_storage;
 	void            *mapper_temp;
@@ -61,18 +71,27 @@ struct genesis_context {
 	uint32_t        last_flush_cycle;
 	uint32_t        soft_flush_cycles;
 	uint32_t        tmss_write_offset;
-	uint8_t         bank_regs[8];
+	uint32_t        last_sync_cycle;
+	uint32_t        refresh_counter;
 	uint16_t        z80_bank_reg;
+	uint16_t        pico_pen_x;
+	uint16_t        pico_pen_y;
 	uint16_t        tmss_lock[2];
 	uint16_t        mapper_start_index;
 	uint8_t         mapper_type;
+	uint8_t         bank_regs[9];
 	uint8_t         save_type;
 	sega_io         io;
 	uint8_t         version_reg;
+	uint8_t         pico_button_state;
+	uint8_t         pico_page;
 	uint8_t         bus_busy;
 	uint8_t         reset_requested;
 	uint8_t         tmss;
 	uint8_t         vdp_unlocked;
+	uint8_t         enter_z80_debugger;
+	uint8_t         pico_story_window;
+	uint8_t         pico_story_pages[7];
 	eeprom_state    eeprom;
 	nor_state       nor;
 };
@@ -80,10 +99,15 @@ struct genesis_context {
 #define RAM_WORDS 32 * 1024
 #define Z80_RAM_BYTES 8 * 1024
 
-m68k_context * sync_components(m68k_context *context, uint32_t address);
 genesis_context *alloc_config_genesis(void *rom, uint32_t rom_size, void *lock_on, uint32_t lock_on_size, uint32_t system_opts, uint8_t force_region);
+genesis_context *alloc_config_genesis_cdboot(system_media *media, uint32_t system_opts, uint8_t force_region);
+genesis_context* alloc_config_pico(void *rom, uint32_t rom_size, void *lock_on, uint32_t lock_on_size, uint32_t ym_opts, uint8_t force_region, system_type stype);
+genesis_context *alloc_genesis_32x(system_media *media, uint32_t opts, uint8_t force_region);
+genesis_context *alloc_genesis_32x_cdboot(system_media *media, uint32_t system_opts, uint8_t force_region);
 void genesis_serialize(genesis_context *gen, serialize_buffer *buf, uint32_t m68k_pc, uint8_t all);
 void genesis_deserialize(deserialize_buffer *buf, genesis_context *gen);
+void gen_update_refresh_free_access(m68k_context *context);
+void gen_update_z80_bank_pointer(genesis_context *gen);
 
 #endif //GENESIS_H_
 

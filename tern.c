@@ -286,6 +286,9 @@ void tern_foreach_int(tern_node *head, iter_fun fun, void *data, char *keybuf, i
 
 void tern_foreach(tern_node *head, iter_fun fun, void *data)
 {
+	if (!head) {
+		return;
+	}
 	//lame, but good enough for my purposes
 	char key[MAX_ITER_KEY+1];
 	tern_foreach_int(head, fun, data, key, 0);
@@ -293,13 +296,33 @@ void tern_foreach(tern_node *head, iter_fun fun, void *data)
 
 char * tern_int_key(uint32_t key, char * buf)
 {
-	char * cur = buf;
+
+	int len = 0;
+	uint32_t tmp = key;
+	while (tmp)
+	{
+		tmp >>= 7;
+		++len;
+	}
+	buf[len] = 0;
+	char * cur = buf + len - 1;
 	while (key)
 	{
-		*(cur++) = (key & 0x7F) + 1;
+		*(cur--) = (key & 0x7F) + 1;
 		key >>= 7;
 	}
-	*cur = 0;
+	return buf;
+}
+
+char * tern_sortable_int_key(uint32_t key, char * buf)
+{
+	buf[MAX_INT_KEY_SIZE - 1] = 0;
+	char * cur = buf + MAX_INT_KEY_SIZE - 2;
+	while (cur >= buf)
+	{
+		*(cur--) = (key & 0x7F) + 1;
+		key >>= 7;
+	}
 	return buf;
 }
 

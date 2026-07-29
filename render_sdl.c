@@ -26,23 +26,61 @@
 #include <GL/glew.h>
 #endif
 #endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define MAX_EVENT_POLL_PER_FRAME 2
 
+
+typedef struct {
+	SDL_Window           *win;
+	SDL_Renderer         *renderer;
+	SDL_Texture          *sdl_texture;
+	SDL_Texture          **static_images;
+	window_close_handler on_close;
+	ui_render_fun        on_render;
+	event_handler        on_event;
+	uint32_t             width;
+	uint32_t             height;
+	uint8_t              num_static;
+#ifndef DISABLE_OPENGL
+	SDL_GLContext        *gl_context;
+	pixel_t              *texture_buf;
+	uint32_t             orig_tex_width;
+	uint32_t             orig_tex_height;
+	uint32_t             tex_width;
+	uint32_t             tex_height;
+	GLuint               gl_texture[2];
+	GLuint               *gl_static_images;
+	GLuint               vshader;
+	GLuint               fshader;
+	GLuint               program;
+	GLuint               gl_buffers[3];
+	GLuint               image_buffer;
+	GLfloat              *image_vertices;
+	GLint                un_texture;
+	GLint                un_width;
+	GLint                un_height;
+	GLint                at_pos;
+	GLint                at_uv;
+	uint8_t              color[4];
+#endif
+} extra_window;
+
 static SDL_Window *main_window;
-static SDL_Window **extra_windows;
+static extra_window *extras;
 static SDL_Renderer *main_renderer;
-static SDL_Renderer **extra_renderers;
-static SDL_Texture  **sdl_textures;
+static SDL_Texture  *sdl_textures[FRAMEBUFFER_UI + 1];
 static window_close_handler *close_handlers;
-static uint8_t num_textures;
+static uint8_t num_extras;
 static SDL_Rect      main_clip;
 static SDL_GLContext *main_context;
 
-static int main_width, main_height, windowed_width, windowed_height, is_fullscreen;
+static int main_width, main_height, windowed_width, windowed_height;
 
 static uint8_t render_gl = 1;
-static uint8_t scanlines = 0;
+static uint8_t scanlines, is_fullscreen, force_cursor;
 
 static uint32_t last_frame = 0;
 
@@ -60,7 +98,7 @@ enum {
 static uint8_t sync_src;
 static uint32_t min_buffered;
 
-uint32_t **frame_buffers;
+pixel_t **frame_buffers;
 uint32_t num_buffers;
 uint32_t buffer_storage;
 
@@ -74,9 +112,18 @@ uint8_t render_is_audio_sync(void)
 	return sync_src < SYNC_VIDEO;
 }
 
+uint8_t render_is_threaded_video(void)
+{
+	return sync_src == SYNC_AUDIO_THREAD || sync_src == SYNC_EXTERNAL;
+}
+
 uint8_t render_should_release_on_exit(void)
 {
+#ifdef __EMSCRIPTEN__
+	return 0;
+#else
 	return sync_src != SYNC_AUDIO_THREAD;
+#endif
 }
 
 void render_buffer_consumed(audio_source *src)
@@ -88,12 +135,20 @@ static void audio_callback(void * userdata, uint8_t *byte_stream, int len)
 {
 	SDL_LockMutex(audio_mutex);
 		uint8_t all_ready;
+#ifdef __EMSCRIPTEN__
+		if (!all_sources_ready()) {
+			memset(byte_stream, 0, len);
+			SDL_UnlockMutex(audio_mutex);
+			return;
+		}
+#else
 		do {
 			all_ready = all_sources_ready();
 			if (!quitting && !all_ready) {
 				SDL_CondWait(audio_ready, audio_mutex);
 			}
 		} while(!quitting && !all_ready);
+#endif
 		if (!quitting) {
 			mix_and_convert(byte_stream, len, NULL);
 		}
@@ -159,6 +214,7 @@ static void render_close_audio()
 	*/
 }
 
+static uint8_t audio_active;
 void *render_new_audio_opaque(void)
 {
 	return SDL_CreateCond();
@@ -171,6 +227,7 @@ void render_free_audio_opaque(void *opaque)
 
 void render_audio_created(audio_source *source)
 {
+	audio_active = 1;
 	if (sync_src == SYNC_AUDIO) {
 		//SDL_PauseAudio acquires the audio device lock, which is held while the callback runs
 		//since our callback can itself be stuck waiting on the audio_ready condition variable
@@ -192,6 +249,7 @@ void render_source_paused(audio_source *src, uint8_t remaining_sources)
 	}
 	if (!remaining_sources && render_is_audio_sync()) {
 		SDL_PauseAudio(1);
+		audio_active = 0;
 		if (sync_src == SYNC_AUDIO_THREAD) {
 			SDL_CondSignal(frame_ready);
 		}
@@ -200,6 +258,7 @@ void render_source_paused(audio_source *src, uint8_t remaining_sources)
 
 void render_source_resumed(audio_source *src)
 {
+	audio_active = 1;
 	if (sync_src == SYNC_AUDIO) {
 		//SDL_PauseAudio acquires the audio device lock, which is held while the callback runs
 		//since our callback can itself be stuck waiting on the audio_ready condition variable
@@ -212,6 +271,14 @@ void render_source_resumed(audio_source *src)
 	if (current_system && sync_src == SYNC_AUDIO_THREAD) {
 		system_request_exit(current_system, 0);
 	}
+}
+
+uint8_t audio_deadlock_hack(void);
+
+static ui_render_fun audio_full_cb;
+void render_set_audio_full_fun(ui_render_fun cb)
+{
+	audio_full_cb = cb;
 }
 
 void render_do_audio_ready(audio_source *src)
@@ -227,17 +294,29 @@ void render_do_audio_ready(audio_source *src)
 			system_request_exit(current_system, 0);
 		}
 	} else if (sync_src == SYNC_AUDIO) {
+		uint8_t all_ready = 0;
 		SDL_LockMutex(audio_mutex);
+#ifndef __EMSCRIPTEN__
+			if (src->front_populated) {
+				if (audio_deadlock_hack()) {
+					SDL_CondSignal(audio_ready);
+				}
+			}
 			while (src->front_populated) {
 				SDL_CondWait(src->opaque, audio_mutex);
 			}
+#endif
 			int16_t *tmp = src->front;
 			src->front = src->back;
 			src->back = tmp;
 			src->front_populated = 1;
 			src->buffer_pos = 0;
+			all_ready = all_sources_ready();
 			SDL_CondSignal(audio_ready);
 		SDL_UnlockMutex(audio_mutex);
+		if (all_ready && audio_full_cb) {
+			audio_full_cb();
+		}
 	} else {
 		uint32_t num_buffered;
 		SDL_LockAudio();
@@ -264,17 +343,21 @@ int render_height()
 	return main_height;
 }
 
-int render_fullscreen()
+uint8_t render_fullscreen(void)
 {
 	return is_fullscreen;
 }
 
-uint32_t render_map_color(uint8_t r, uint8_t g, uint8_t b)
+pixel_t render_map_color(uint8_t r, uint8_t g, uint8_t b)
 {
-#ifdef USE_GLES
-	return 255 << 24 | b << 16 | g << 8 | r;
+#ifdef USE_RGB565
+	return r << 8 & 0xF800 | g << 3 & 0x07E0 | b >> 3;
 #else
-	return 255 << 24 | r << 16 | g << 8 | b;
+#ifdef USE_GLES
+	return 255UL << 24 | b << 16 | g << 8 | r;
+#else
+	return 255UL << 24 | r << 16 | g << 8 | b;
+#endif
 #endif
 }
 
@@ -290,15 +373,23 @@ void render_set_external_sync(uint8_t ext_sync_on)
 	}
 }
 
-#ifndef DISABLE_OPENGL
-static GLuint textures[3], buffers[2], vshader, fshader, program, un_textures[2], un_width, un_height, un_texsize, at_pos;
 static int tex_width, tex_height;
+#ifndef DISABLE_OPENGL
+static GLuint textures[3], buffers[2], vshader, fshader, program;
+static GLint un_textures[2], un_width, un_height, un_texsize, un_curfield, un_interlaced, un_scanlines, at_pos;
 
 static GLfloat vertex_data_default[] = {
 	-1.0f, -1.0f,
 	 1.0f, -1.0f,
 	-1.0f,  1.0f,
 	 1.0f,  1.0f
+};
+
+static GLfloat uvs[] = {
+	 0.0f,  1.0f,
+	 1.0f,  1.0f,
+	 0.0f,  0.0f,
+	 1.0f,  0.0f
 };
 
 static GLfloat vertex_data[8];
@@ -349,7 +440,7 @@ static GLuint load_shader(char * fname, GLenum shader_type)
 	}
 #endif
 	text[fsize] = 0;
-	
+
 	if (strncmp(text, "#version", strlen("#version"))) {
 		GLchar *tmp = text;
 		text = alloc_concat(shader_prefix, tmp);
@@ -379,19 +470,38 @@ static GLuint load_shader(char * fname, GLenum shader_type)
 }
 #endif
 
-static uint32_t texture_buf[512 * 513];
+static pixel_t texture_buf[512 * 513];
 #ifdef DISABLE_OPENGL
-#define RENDER_FORMAT SDL_PIXELFORMAT_ARGB8888
+#ifdef USE_RGB565
+#define RENDER_FORMAT SDL_PIXELFORMAT_RGB565
 #else
+#define RENDER_FORMAT SDL_PIXELFORMAT_ARGB8888
+#endif
+#else //DISABLE_OPENGL
+#ifdef USE_RGB565
+#define INTERNAL_FORMAT GL_RGB
+#define SRC_FORMAT GL_RGB
+#define SRC_TYPE GL_UNSIGNED_SHORT_5_6_5
+#define RENDER_FORMAT SDL_PIXELFORMAT_RGB565
+#else //USE_RGB565
+#define SRC_TYPE GL_UNSIGNED_BYTE
 #ifdef USE_GLES
 #define INTERNAL_FORMAT GL_RGBA
 #define SRC_FORMAT GL_RGBA
 #define RENDER_FORMAT SDL_PIXELFORMAT_ABGR8888
-#else
+#else //USE_GLES
 #define INTERNAL_FORMAT GL_RGBA8
 #define SRC_FORMAT GL_BGRA
 #define RENDER_FORMAT SDL_PIXELFORMAT_ARGB8888
+#endif //USE_GLES
+#endif //USE_RGB565
+
+#ifdef USE_GLES
+#define SRC_FORMAT32 GL_RGBA
+#else
+#define SRC_FORMAT32 GL_BGRA
 #endif
+
 static void gl_setup()
 {
 	tern_val def = {.ptrval = "linear"};
@@ -416,10 +526,10 @@ static void gl_setup()
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		if (i < 2) {
 			//TODO: Fixme for PAL + invalid display mode
-			glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, tex_width, tex_height, 0, SRC_FORMAT, GL_UNSIGNED_BYTE, texture_buf);
+			glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, tex_width, tex_height, 0, SRC_FORMAT, SRC_TYPE, texture_buf);
 		} else {
-			uint32_t blank = 255 << 24;
-			glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, 1, 1, 0, SRC_FORMAT, GL_UNSIGNED_BYTE, &blank);
+			pixel_t blank = render_map_color(0, 0, 0);
+			glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, 1, 1, 0, SRC_FORMAT, SRC_TYPE, &blank);
 		}
 	}
 	glGenBuffers(2, buffers);
@@ -446,6 +556,9 @@ static void gl_setup()
 	un_width = glGetUniformLocation(program, "width");
 	un_height = glGetUniformLocation(program, "height");
 	un_texsize = glGetUniformLocation(program, "texsize");
+	un_curfield = glGetUniformLocation(program, "curfield");
+	un_interlaced = glGetUniformLocation(program, "interlaced");
+	un_scanlines = glGetUniformLocation(program, "scanlines");
 	at_pos = glGetAttribLocation(program, "pos");
 }
 
@@ -457,7 +570,7 @@ static void gl_teardown()
 	glDeleteBuffers(2, buffers);
 	glDeleteTextures(3, textures);
 }
-#endif
+#endif //DISABLE_OPENGL
 
 static uint8_t texture_init;
 static void render_alloc_surfaces()
@@ -465,8 +578,6 @@ static void render_alloc_surfaces()
 	if (texture_init) {
 		return;
 	}
-	sdl_textures= calloc(sizeof(SDL_Texture *), 3);
-	num_textures = 3;
 	texture_init = 1;
 #ifndef DISABLE_OPENGL
 	if (render_gl) {
@@ -485,14 +596,12 @@ static void render_alloc_surfaces()
 
 static void free_surfaces(void)
 {
-	for (int i = 0; i < num_textures; i++)
+	for (int i = 0; i <= FRAMEBUFFER_UI; i++)
 	{
 		if (sdl_textures[i]) {
 			SDL_DestroyTexture(sdl_textures[i]);
 		}
 	}
-	free(sdl_textures);
-	sdl_textures = NULL;
 	texture_init = 0;
 }
 
@@ -543,25 +652,52 @@ static void update_aspect()
 	main_clip.h = main_height;
 	main_clip.x = main_clip.y = 0;
 	if (config_aspect() > 0.0f) {
+		char *integer_scaling_str = tern_find_path_default(config, "video\0integer_scaling\0", (tern_val){.ptrval = "off"}, TVAL_PTR).ptrval;
+		uint8_t integer_scaling = !strcmp(integer_scaling_str, "on");
 		float aspect = (float)main_width / main_height;
-		if (fabs(aspect - config_aspect()) < 0.01f) {
+		if (!integer_scaling && fabs(aspect - config_aspect()) < 0.01f) {
 			//close enough for government work
 			return;
 		}
+		uint32_t height, scale;
+		if (integer_scaling) {
+			height = render_emulated_height();
+			if (aspect >= config_aspect()) {
+				scale = main_height / height;
+			} else {
+				uint32_t aspect_height = 0.5f + (float)main_width / config_aspect();
+				scale = aspect_height / height;
+			}
+		}
 #ifndef DISABLE_OPENGL
 		if (render_gl) {
-			for (int i = 0; i < 4; i++)
-			{
-				if (aspect > config_aspect()) {
-					vertex_data[i*2] *= config_aspect()/aspect;
-				} else {
-					vertex_data[i*2+1] *= aspect/config_aspect();
+			if (integer_scaling) {
+				float vscale = ((float)(scale * height)) / (float)main_height;
+				float hscale = (config_aspect() * (float)(scale * height)) / (float)main_width;
+				for (int i = 0; i < 4; i++)
+				{
+					vertex_data[i*2] *= hscale;
+					vertex_data[i*2+1] *= vscale;
+				}
+			} else {
+				for (int i = 0; i < 4; i++)
+				{
+					if (aspect > config_aspect()) {
+						vertex_data[i*2] *= config_aspect()/aspect;
+					} else {
+						vertex_data[i*2+1] *= aspect/config_aspect();
+					}
 				}
 			}
 		} else {
 #endif
-			main_clip.w = aspect > config_aspect() ? config_aspect() * (float)main_height : main_width;
-			main_clip.h = aspect > config_aspect() ? main_height : main_width / config_aspect();
+			if (integer_scaling) {
+				main_clip.h = height * scale;
+				main_clip.w = main_clip.h * config_aspect();
+			} else {
+				main_clip.w = aspect > config_aspect() ? config_aspect() * (float)main_height : main_width;
+				main_clip.h = aspect > config_aspect() ? main_height : main_width / config_aspect();
+			}
 			main_clip.x = (main_width  - main_clip.w) / 2;
 			main_clip.y = (main_height - main_clip.h) / 2;
 #ifndef DISABLE_OPENGL
@@ -693,12 +829,16 @@ void render_set_drag_drop_handler(drop_handler handler)
 }
 
 static event_handler custom_event_handler;
-void render_set_event_handler(event_handler handler)
+void render_set_event_handler(uint8_t which, event_handler handler)
 {
-	custom_event_handler = handler;
+	if (which < FRAMEBUFFER_USER_START) {
+		custom_event_handler = handler;
+	} else {
+		extras[which - FRAMEBUFFER_USER_START].on_event = handler;
+	}
 }
 
-static int find_joystick_index(SDL_JoystickID instanceID)
+int render_find_joystick_index(SDL_JoystickID instanceID)
 {
 	for (int i = 0; i < MAX_JOYSTICKS; i++) {
 		if (joysticks[i] && SDL_JoystickInstanceID(joysticks[i]) == instanceID) {
@@ -771,11 +911,15 @@ void render_enable_gamepad_events(uint8_t enabled)
 		}
 	}
 }
+uint8_t render_are_gamepad_events_enabled(void)
+{
+	return gc_events_enabled;
+}
 
-static uint32_t overscan_top[NUM_VID_STD] = {2, 21};
-static uint32_t overscan_bot[NUM_VID_STD] = {1, 17};
-static uint32_t overscan_left[NUM_VID_STD] = {13, 13};
-static uint32_t overscan_right[NUM_VID_STD] = {14, 14};
+static uint32_t overscan_top[NUM_VID_STD] = {2, 21, 51};
+static uint32_t overscan_bot[NUM_VID_STD] = {1, 17, 48};
+static uint32_t overscan_left[NUM_VID_STD] = {13, 13, 61};
+static uint32_t overscan_right[NUM_VID_STD] = {14, 14, 62};
 static vid_std video_standard = VID_NTSC;
 static uint8_t need_ui_fb_resize;
 
@@ -791,7 +935,7 @@ int lock_joystick_index(int joystick, int desired_index)
 	int tmp_index = joystick_sdl_index[joystick];
 	joysticks[joystick] = joysticks[desired_index];
 	joystick_sdl_index[joystick] = joystick_sdl_index[desired_index];
-	joystick_index_locked[joystick] = joystick_sdl_index[desired_index];
+	joystick_index_locked[joystick] = joystick_index_locked[desired_index];
 	joysticks[desired_index] = tmp_joy;
 	joystick_sdl_index[desired_index] = tmp_index;
 	joystick_index_locked[desired_index] = 1;
@@ -803,50 +947,123 @@ int lock_joystick_index(int joystick, int desired_index)
 	return desired_index;
 }
 
+static float ui_scale_x = 1.0f, ui_scale_y = 1.0f;
+int render_ui_to_pixels_x(int ui)
+{
+	return ui * ui_scale_x + 0.5f;
+}
+
+int render_ui_to_pixels_y(int ui)
+{
+	return ui * ui_scale_y + 0.5f;
+}
+
+static uint8_t has_event_handler(SDL_Window *win)
+{
+	for (uint8_t i = 0; i < num_extras; i++)
+	{
+		if (extras[i].win == win) {
+			return extras[i].on_event != NULL;
+		}
+	}
+	return 0;
+}
+
+static uint8_t main_is_relative;
+static uint8_t main_has_focus;
+void render_relative_mouse(uint8_t enabled)
+{
+	main_is_relative = enabled;
+	if (main_has_focus) {
+		SDL_SetRelativeMouseMode(enabled);
+	}
+}
+
+
+
+#ifndef DISABLE_OPENGL
+static void gl_set_vsync(const char *vsync)
+{
+	SDL_GL_MakeCurrent(main_window, main_context);
+	if (!strcmp("tear", vsync)) {
+		if (SDL_GL_SetSwapInterval(-1) < 0) {
+			warning("late tear is not available (%s), using normal vsync\n", SDL_GetError());
+			vsync = "on";
+		} else {
+			vsync = NULL;
+		}
+	}
+	if (vsync) {
+		if (SDL_GL_SetSwapInterval(!strcmp("on", vsync)) < 0) {
+#ifdef __ANDROID__
+			debug_message("Failed to set vsync to %s: %s\n", vsync, SDL_GetError());
+#else
+			warning("Failed to set vsync to %s: %s\n", vsync, SDL_GetError());
+#endif
+		}
+	} else {
+		printf("vsync not set, SDL_GL_SetSwapInterval not called\n");
+	}
+}
+#endif
+
 static int32_t handle_event(SDL_Event *event)
 {
-	if (custom_event_handler) {
-		custom_event_handler(event);
-	}
+	SDL_Window *event_win = NULL;
 	switch (event->type) {
 	case SDL_KEYDOWN:
-		handle_keydown(event->key.keysym.sym, scancode_map[event->key.keysym.scancode]);
+		event_win = SDL_GetWindowFromID(event->key.windowID);
+		if (event_win == main_window || !has_event_handler(event_win)) {
+			handle_keydown(event->key.keysym.sym, scancode_map[event->key.keysym.scancode]);
+		}
 		break;
 	case SDL_KEYUP:
-		handle_keyup(event->key.keysym.sym, scancode_map[event->key.keysym.scancode]);
+		event_win = SDL_GetWindowFromID(event->key.windowID);
+		if (event_win == main_window || !has_event_handler(event_win)) {
+			handle_keyup(event->key.keysym.sym, scancode_map[event->key.keysym.scancode]);
+		}
 		break;
 	case SDL_JOYBUTTONDOWN:
-		handle_joydown(find_joystick_index(event->jbutton.which), event->jbutton.button);
+		event_win = main_window;
+		handle_joydown(render_find_joystick_index(event->jbutton.which), event->jbutton.button);
 		break;
 	case SDL_JOYBUTTONUP:
-		handle_joyup(lock_joystick_index(find_joystick_index(event->jbutton.which), -1), event->jbutton.button);
+		event_win = main_window;
+		handle_joyup(lock_joystick_index(render_find_joystick_index(event->jbutton.which), -1), event->jbutton.button);
 		break;
 	case SDL_JOYHATMOTION:
-		handle_joy_dpad(lock_joystick_index(find_joystick_index(event->jhat.which), -1), event->jhat.hat, event->jhat.value);
+		event_win = main_window;
+		handle_joy_dpad(lock_joystick_index(render_find_joystick_index(event->jhat.which), -1), event->jhat.hat, event->jhat.value);
 		break;
 	case SDL_JOYAXISMOTION:
-		handle_joy_axis(lock_joystick_index(find_joystick_index(event->jaxis.which), -1), event->jaxis.axis, event->jaxis.value);
+		event_win = main_window;
+		handle_joy_axis(lock_joystick_index(render_find_joystick_index(event->jaxis.which), -1), event->jaxis.axis, event->jaxis.value);
 		break;
-	case SDL_JOYDEVICEADDED:
-		if (event->jdevice.which < MAX_JOYSTICKS) {
-			int index = lowest_unused_joystick_index();
-			if (index >= 0) {
-				SDL_Joystick * joy = joysticks[index] = SDL_JoystickOpen(event->jdevice.which);
-				joystick_sdl_index[index] = event->jdevice.which;
-				joystick_index_locked[index] = 0;
-				if (gc_events_enabled) {
-					controllers[index] = SDL_GameControllerOpen(event->jdevice.which);
-				}
-				if (joy) {
-					debug_message("Joystick %d added: %s\n", index, SDL_JoystickName(joy));
-					debug_message("\tNum Axes: %d\n\tNum Buttons: %d\n\tNum Hats: %d\n", SDL_JoystickNumAxes(joy), SDL_JoystickNumButtons(joy), SDL_JoystickNumHats(joy));
-					handle_joy_added(index);
-				}
+	case SDL_JOYDEVICEADDED: {
+		int index = lowest_unused_joystick_index();
+		if (index >= 0) {
+			SDL_Joystick * joy = SDL_JoystickOpen(event->jdevice.which);
+			if (SDL_JoystickNumAxes(joy) == 3 && SDL_JoystickNumButtons(joy) == 0) {
+				//probably just an acclerometer or gyro
+				SDL_JoystickClose(joy);
+				break;
+			}
+			joysticks[index] = joy;
+			joystick_sdl_index[index] = event->jdevice.which;
+			joystick_index_locked[index] = 0;
+			if (gc_events_enabled) {
+				controllers[index] = SDL_GameControllerOpen(event->jdevice.which);
+			}
+			if (joy) {
+				debug_message("Joystick %d added: %s\n", index, SDL_JoystickName(joy));
+				debug_message("\tNum Axes: %d\n\tNum Buttons: %d\n\tNum Hats: %d\n", SDL_JoystickNumAxes(joy), SDL_JoystickNumButtons(joy), SDL_JoystickNumHats(joy));
+				handle_joy_added(index);
 			}
 		}
 		break;
+	}
 	case SDL_JOYDEVICEREMOVED: {
-		int index = find_joystick_index(event->jdevice.which);
+		int index = render_find_joystick_index(event->jdevice.which);
 		if (index >= 0) {
 			SDL_JoystickClose(joysticks[index]);
 			joysticks[index] = NULL;
@@ -861,49 +1078,96 @@ static int32_t handle_event(SDL_Event *event)
 		break;
 	}
 	case SDL_MOUSEMOTION:
-		handle_mouse_moved(event->motion.which, event->motion.x, event->motion.y + overscan_top[video_standard], event->motion.xrel, event->motion.yrel);
+		event_win = SDL_GetWindowFromID(event->motion.windowID);
+		handle_mouse_moved(event->motion.which, event->motion.x * ui_scale_x + 0.5f, event->motion.y * ui_scale_y + 0.5f + overscan_top[video_standard], event->motion.xrel, event->motion.yrel);
 		break;
 	case SDL_MOUSEBUTTONDOWN:
+		event_win = SDL_GetWindowFromID(event->button.windowID);
 		handle_mousedown(event->button.which, event->button.button);
 		break;
 	case SDL_MOUSEBUTTONUP:
+		event_win = SDL_GetWindowFromID(event->button.windowID);
 		handle_mouseup(event->button.which, event->button.button);
+		break;
+	case SDL_MOUSEWHEEL:
+		event_win = SDL_GetWindowFromID(event->wheel.windowID);
+		break;
+	case SDL_FINGERMOTION:
+	case SDL_FINGERDOWN:
+	case SDL_FINGERUP:
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+		event_win = SDL_GetWindowFromID(event->tfinger.windowID);
+#else
+		event_win = main_window;
+#endif
 		break;
 	case SDL_WINDOWEVENT:
 		switch (event->window.event)
 		{
 		case SDL_WINDOWEVENT_SIZE_CHANGED:
-			if (!main_window) {
+			if (!main_window || SDL_GetWindowFromID(event->window.windowID) != main_window) {
 				break;
 			}
-			main_width = event->window.data1;
-			main_height = event->window.data2;
 			need_ui_fb_resize = 1;
-			update_aspect();
+			const char *vsync;
+			if (sync_src == SYNC_AUDIO) {
+				tern_val def = {.ptrval = "off"};
+				vsync = tern_find_path_default(config, "video\0vsync\0", def, TVAL_PTR).ptrval;
+			} else {
+				vsync = "on";
+			}
 #ifndef DISABLE_OPENGL
 			if (render_gl) {
+				SDL_GL_MakeCurrent(main_window, main_context);
 				if (on_context_destroyed) {
 					on_context_destroyed();
 				}
 				gl_teardown();
 				SDL_GL_DeleteContext(main_context);
 				main_context = SDL_GL_CreateContext(main_window);
+				SDL_GL_GetDrawableSize(main_window, &main_width, &main_height);
+				update_aspect();
+				gl_set_vsync(vsync);
 				gl_setup();
 				if (on_context_created) {
 					on_context_created();
 				}
+			} else {
+#endif
+				SDL_GetRendererOutputSize(main_renderer, &main_width, &main_height);
+				update_aspect();
+#ifndef DISABLE_OPENGL
 			}
 #endif
+			if (main_width != event->window.data1 || main_height != event->window.data2) {
+				debug_message("Window resized - UI units %dx%d, pixels %dx%d\n", event->window.data1, event->window.data2, main_width, main_height);
+			} else {
+				debug_message("Window resized: %dx%d\n", main_width, main_height);
+			}
+			ui_scale_x = (float)main_width / (float)event->window.data1;
+			ui_scale_y = (float)main_height / (float)event->window.data2;
+			break;
+		case SDL_WINDOWEVENT_ENTER:
+			main_has_focus = main_window && SDL_GetWindowID(main_window) == event->window.windowID;
+			if (main_is_relative) {
+				SDL_SetRelativeMouseMode(main_has_focus);
+			}
+			break;
+		case SDL_WINDOWEVENT_LEAVE:
+			main_has_focus = !(main_window && SDL_GetWindowID(main_window) == event->window.windowID);
+			if (main_is_relative && main_has_focus) {
+				SDL_SetRelativeMouseMode(0);
+			}
 			break;
 		case SDL_WINDOWEVENT_CLOSE:
 			if (main_window && SDL_GetWindowID(main_window) == event->window.windowID) {
 				exit(0);
 			} else {
-				for (int i = 0; i < num_textures - FRAMEBUFFER_USER_START; i++)
+				for (int i = 0; i < num_extras; i++)
 				{
-					if (SDL_GetWindowID(extra_windows[i]) == event->window.windowID) {
-						if (close_handlers[i]) {
-							close_handlers[i](i + FRAMEBUFFER_USER_START);
+					if (SDL_GetWindowID(extras[i].win) == event->window.windowID) {
+						if (extras[i].on_close) {
+							extras[i].on_close(i + FRAMEBUFFER_USER_START);
 						}
 						break;
 					}
@@ -912,15 +1176,46 @@ static int32_t handle_event(SDL_Event *event)
 			break;
 		}
 		break;
+	case SDL_TEXTEDITING:
+		event_win = SDL_GetWindowFromID(event->edit.windowID);
+		break;
+#if SDL_VERSION_ATLEAST(2, 0, 22)
+	case SDL_TEXTEDITING_EXT:
+		event_win = SDL_GetWindowFromID(event->editExt.windowID);
+		break;
+#endif
+	case SDL_TEXTINPUT:
+		event_win = SDL_GetWindowFromID(event->text.windowID);
+		break;
 	case SDL_DROPFILE:
 		if (drag_drop_handler) {
-			drag_drop_handler(event->drop.file);
+			drag_drop_handler(strdup(event->drop.file));
 		}
 		SDL_free(event->drop.file);
 		break;
 	case SDL_QUIT:
 		puts("");
 		exit(0);
+	default:
+		event_win = main_window;
+		break;
+	}
+	if (event_win) {
+		if (event_win == main_window) {
+			if (custom_event_handler) {
+				custom_event_handler(FRAMEBUFFER_UI, event);
+			}
+		} else {
+			for (uint8_t i = 0; i < num_extras; i++)
+			{
+				if (extras[i].win == event_win) {
+					if (extras[i].on_event) {
+						extras[i].on_event(i + FRAMEBUFFER_USER_START, event);
+					}
+					break;
+				}
+			}
+		}
 	}
 	return 0;
 }
@@ -934,7 +1229,7 @@ static void drain_events()
 	}
 }
 
-static char *vid_std_names[NUM_VID_STD] = {"ntsc", "pal"};
+static char *vid_std_names[NUM_VID_STD] = {"ntsc", "pal", "gamegear"};
 static int display_hz;
 static int source_hz;
 static int source_frame;
@@ -942,25 +1237,39 @@ static int source_frame_count;
 static int frame_repeat[60];
 
 static uint32_t sample_rate;
-static void init_audio()
+typedef struct {
+	int      rate;
+	int      samples;
+	uint16_t format;
+} audio_config;
+
+static audio_config get_audio_config(void)
+{
+	audio_config ret;
+	char * rate_str = tern_find_path(config, "audio\0rate\0", TVAL_PTR).ptrval;
+   	ret.rate = rate_str ? atoi(rate_str) : 0;
+   	if (!ret.rate) {
+   		ret.rate = 48000;
+   	}
+	char *config_format = tern_find_path_default(config, "audio\0format\0", (tern_val){.ptrval="f32"}, TVAL_PTR).ptrval;
+	ret.format = !strcmp(config_format, "s16") ? AUDIO_S16SYS : AUDIO_F32SYS;
+    char * samples_str = tern_find_path(config, "audio\0buffer\0", TVAL_PTR).ptrval;
+   	ret.samples = samples_str ? atoi(samples_str) : 0;
+   	if (!ret.samples) {
+   		ret.samples = 512;
+   	}
+	return ret;
+}
+
+static audio_config current_audio_config;
+static void init_audio(void)
 {
 	SDL_AudioSpec desired, actual;
-    char * rate_str = tern_find_path(config, "audio\0rate\0", TVAL_PTR).ptrval;
-   	int rate = rate_str ? atoi(rate_str) : 0;
-   	if (!rate) {
-   		rate = 48000;
-   	}
-    desired.freq = rate;
-	char *config_format = tern_find_path_default(config, "audio\0format\0", (tern_val){.ptrval="f32"}, TVAL_PTR).ptrval;
-	desired.format = !strcmp(config_format, "s16") ? AUDIO_S16SYS : AUDIO_F32SYS;
+	audio_config ac = get_audio_config();
+	desired.freq = ac.rate;
+	desired.format = ac.format;
 	desired.channels = 2;
-    char * samples_str = tern_find_path(config, "audio\0buffer\0", TVAL_PTR).ptrval;
-   	int samples = samples_str ? atoi(samples_str) : 0;
-   	if (!samples) {
-   		samples = 512;
-   	}
-    debug_message("config says: %d\n", samples);
-    desired.samples = samples*2;
+	desired.samples = ac.samples * 2;
 	switch (sync_src)
 	{
 	case SYNC_AUDIO:
@@ -977,8 +1286,9 @@ static void init_audio()
 	if (SDL_OpenAudio(&desired, &actual) < 0) {
 		fatal_error("Unable to open SDL audio: %s\n", SDL_GetError());
 	}
+	current_audio_config = ac;
 	sample_rate = actual.freq;
-	debug_message("Initialized audio at frequency %d with a %d sample buffer, ", actual.freq, actual.samples);
+	debug_message("Initialized %d channel audio at frequency %d with a %d sample buffer, ", actual.channels, actual.freq, actual.samples);
 	render_audio_format format = RENDER_AUDIO_UNKNOWN;
 	if (actual.format == AUDIO_S16SYS) {
 		debug_message("signed 16-bit int format\n");
@@ -990,16 +1300,36 @@ static void init_audio()
 		debug_message("unsupported format %X\n", actual.format);
 		warning("Unsupported audio sample format: %X\n", actual.format);
 	}
+#ifdef __EMSCRIPTEN__
+	if (sync_src == SYNC_AUDIO) {
+		printf("emscripten_set_main_loop_timing %d\n", actual.samples * 500 / actual.freq);
+		emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, actual.samples * 500 / actual.freq);
+	}
+#endif
 	render_audio_initialized(format, actual.freq, actual.channels, actual.samples, SDL_AUDIO_BITSIZE(actual.format) / 8);
 }
 
-void window_setup(void)
+static void update_cursor(void)
 {
-	uint32_t flags = SDL_WINDOW_RESIZABLE;
+	SDL_ShowCursor((is_fullscreen && !force_cursor) ? SDL_DISABLE : SDL_ENABLE);
+}
+
+void render_force_cursor(uint8_t force)
+{
+	if (force != force_cursor) {
+		force_cursor = force;
+		update_cursor();
+	}
+}
+
+static void window_setup(void)
+{
+	uint32_t flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
 	if (is_fullscreen) {
 		flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 	}
-	
+	update_cursor();
+
 	tern_val def = {.ptrval = "audio"};
 	if (external_sync) {
 		sync_src = SYNC_EXTERNAL;
@@ -1013,17 +1343,17 @@ void window_setup(void)
 			sync_src = SYNC_VIDEO;
 		}
 	}
-	
+
 	if (!num_buffers && (sync_src == SYNC_AUDIO_THREAD || sync_src == SYNC_EXTERNAL)) {
 		frame_mutex = SDL_CreateMutex();
 		free_buffer_mutex = SDL_CreateMutex();
 		frame_ready = SDL_CreateCond();
 		buffer_storage = 4;
-		frame_buffers = calloc(buffer_storage, sizeof(uint32_t*));
+		frame_buffers = calloc(buffer_storage, sizeof(pixel_t*));
 		frame_buffers[0] = texture_buf;
 		num_buffers = 1;
 	}
-	
+
 	const char *vsync;
 	if (sync_src == SYNC_AUDIO) {
 		def.ptrval = "off";
@@ -1031,7 +1361,7 @@ void window_setup(void)
 	} else {
 		vsync = "on";
 	}
-	
+
 	tern_node *video = tern_find_node(config, "video");
 	if (video)
 	{
@@ -1059,7 +1389,7 @@ void window_setup(void)
 		}
 	}
 	render_gl = 0;
-	
+
 #ifndef DISABLE_OPENGL
 	char *gl_enabled_str = tern_find_path_default(config, "video\0gl\0", def, TVAL_PTR).ptrval;
 	uint8_t gl_enabled = strcmp(gl_enabled_str, "off") != 0;
@@ -1082,6 +1412,9 @@ void window_setup(void)
 	if (!main_window) {
 		fatal_error("Unable to create SDL window: %s\n", SDL_GetError());
 	}
+	SDL_GetWindowSize(main_window, &main_width, &main_height);
+	debug_message("Window created with size: %d x %d\n", main_width, main_height);
+	int orig_width = main_width, orig_height = main_height;
 #ifndef DISABLE_OPENGL
 	if (gl_enabled)
 	{
@@ -1098,24 +1431,8 @@ void window_setup(void)
 		if (res == GLEW_OK && GLEW_VERSION_2_0) {
 #endif
 			render_gl = 1;
-			SDL_GL_MakeCurrent(main_window, main_context);
-			if (!strcmp("tear", vsync)) {
-				if (SDL_GL_SetSwapInterval(-1) < 0) {
-					warning("late tear is not available (%s), using normal vsync\n", SDL_GetError());
-					vsync = "on";
-				} else {
-					vsync = NULL;
-				}
-			}
-			if (vsync) {
-				if (SDL_GL_SetSwapInterval(!strcmp("on", vsync)) < 0) {
-#ifdef __ANDROID__
-					debug_message("Failed to set vsync to %s: %s\n", vsync, SDL_GetError());
-#else
-					warning("Failed to set vsync to %s: %s\n", vsync, SDL_GetError());
-#endif
-				}
-			}
+			gl_set_vsync(vsync);
+			SDL_GL_GetDrawableSize(main_window, &main_width, &main_height);
 		} else {
 			warning("OpenGL 2.0 is unavailable, falling back to SDL2 renderer\n");
 		}
@@ -1131,6 +1448,7 @@ void window_setup(void)
 		if (!main_renderer) {
 			fatal_error("unable to create SDL renderer: %s\n", SDL_GetError());
 		}
+		SDL_GetRendererOutputSize(main_renderer, &main_width, &main_height);
 		SDL_RendererInfo rinfo;
 		SDL_GetRendererInfo(main_renderer, &rinfo);
 		debug_message("SDL2 Render Driver: %s\n", rinfo.name);
@@ -1141,8 +1459,13 @@ void window_setup(void)
 	}
 #endif
 
-	SDL_GetWindowSize(main_window, &main_width, &main_height);
-	debug_message("Window created with size: %d x %d\n", main_width, main_height);
+	if (main_width != orig_width || main_height != orig_height) {
+		debug_message("True window resolution %d x %d\n", main_width, main_height);
+	}
+	ui_scale_x = (float)main_width / (float)orig_width;
+	ui_scale_y = (float)main_height / (float)orig_height;
+
+
 	update_aspect();
 	render_alloc_surfaces();
 	def.ptrval = "off";
@@ -1151,6 +1474,11 @@ void window_setup(void)
 
 void render_init(int width, int height, char * title, uint8_t fullscreen)
 {
+#ifdef SDL_HINT_WINDOWS_DPI_SCALING
+	//In some ways, the other DPI scaling option for SDL2 on Windows is better for BlastEm's needs,
+	//but setting this makes it more consistent with how high DPI support works on other platforms
+	SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
+#endif
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0) {
 		fatal_error("Unable to init SDL: %s\n", SDL_GetError());
 	}
@@ -1162,11 +1490,15 @@ void render_init(int width, int height, char * title, uint8_t fullscreen)
 	debug_message("width: %d, height: %d\n", width, height);
 	windowed_width = width;
 	windowed_height = height;
-	
+
 	SDL_DisplayMode mode;
 	//TODO: Explicit multiple monitor support
 	SDL_GetCurrentDisplayMode(0, &mode);
+#ifdef __EMSCRIPTEN__
+	display_hz = 60; //TODO: FIXME
+#else
 	display_hz = mode.refresh_rate;
+#endif
 
 	if (fullscreen) {
 		//the SDL2 migration guide suggests setting width and height to 0 when using SDL_WINDOW_FULLSCREEN_DESKTOP
@@ -1177,16 +1509,16 @@ void render_init(int width, int height, char * title, uint8_t fullscreen)
 	main_width = width;
 	main_height = height;
 	is_fullscreen = fullscreen;
-	
+
 	caption = title;
-	
+
 	window_setup();
 
 	audio_mutex = SDL_CreateMutex();
 	audio_ready = SDL_CreateCond();
-	
+
 	init_audio();
-	
+
 	uint32_t db_size;
 	char *db_data = read_bundled_file("gamecontrollerdb.txt", &db_size);
 	if (db_data) {
@@ -1194,11 +1526,11 @@ void render_init(int width, int height, char * title, uint8_t fullscreen)
 		free(db_data);
 		debug_message("Added %d game controller mappings from gamecontrollerdb.txt\n", added);
 	}
-	
+
 	controller_add_mappings();
-	
+
 	SDL_JoystickEventState(SDL_ENABLE);
-	
+
 	render_set_video_standard(VID_NTSC);
 
 	atexit(render_quit);
@@ -1218,9 +1550,33 @@ void render_reset_mappings(void)
 }
 static int in_toggle;
 
+#ifdef __EMSCRIPTEN__
+void resume_config_update(void *arg)
+{
+	uint8_t was_paused = arg != NULL;
+	quitting = 0;
+	init_audio();
+	render_set_video_standard(video_standard);
+
+	drain_events();
+	in_toggle = 0;
+	if (!was_paused) {
+		SDL_PauseAudio(0);
+	}
+	emscripten_resume_main_loop();
+}
+#endif //__EMSCRIPTEN__
+
 void render_config_updated(void)
 {
-	free_surfaces();
+	for (int i = 0; i <= FRAMEBUFFER_UI; i++)
+	{
+		if (sdl_textures[i]) {
+			SDL_DestroyTexture(sdl_textures[i]);
+			sdl_textures[i] = NULL;
+		}
+	}
+	texture_init = 0;
 #ifndef DISABLE_OPENGL
 	if (render_gl) {
 		if (on_context_destroyed) {
@@ -1238,7 +1594,7 @@ void render_config_updated(void)
 	SDL_DestroyWindow(main_window);
 	main_window = NULL;
 	drain_events();
-	
+
 	char *config_width = tern_find_path(config, "video\0width\0", TVAL_PTR).ptrval;
 	if (config_width) {
 		windowed_width = atoi(config_width);
@@ -1265,7 +1621,8 @@ void render_config_updated(void)
 	if (on_ui_fb_resized) {
 		on_ui_fb_resized();
 	}
-	
+	uint8_t old_sync_src = sync_src;
+
 	window_setup();
 	update_aspect();
 #ifndef DISABLE_OPENGL
@@ -1275,12 +1632,27 @@ void render_config_updated(void)
 	}
 #endif
 
-	uint8_t was_paused = SDL_GetAudioStatus() == SDL_AUDIO_PAUSED;
-	render_close_audio();
-	quitting = 0;
-	init_audio();
-	render_set_video_standard(video_standard);
 	
+	uint8_t was_paused = 1;
+	uint8_t do_audio_reinit = sync_src != old_sync_src;
+	if (!do_audio_reinit) {
+		audio_config ac = get_audio_config();
+		do_audio_reinit = ac.rate != current_audio_config.rate || 
+			ac.samples != current_audio_config.samples || ac.format != current_audio_config.format;
+	}
+	if (do_audio_reinit) {
+		was_paused = SDL_GetAudioStatus() == SDL_AUDIO_PAUSED;
+		render_close_audio();
+#ifdef __EMSCRIPTEN__
+		emscripten_pause_main_loop();
+		emscripten_async_call(resume_config_update, was_paused ? config : NULL, 1000);
+#else
+		quitting = 0;
+		init_audio();
+#endif
+	}
+	render_set_video_standard(video_standard);
+
 	drain_events();
 	in_toggle = 0;
 	if (!was_paused) {
@@ -1288,9 +1660,15 @@ void render_config_updated(void)
 	}
 }
 
-SDL_Window *render_get_window(void)
+SDL_Window *render_get_window(uint8_t which)
 {
-	return main_window;
+	SDL_Window *ret = which < FRAMEBUFFER_USER_START ? main_window : extras[which - FRAMEBUFFER_USER_START].win;
+#ifndef DISABLE_OPENGL
+	if (render_gl) {
+		SDL_GL_MakeCurrent(ret, which < FRAMEBUFFER_USER_START ? main_context : extras[which - FRAMEBUFFER_USER_START].gl_context);
+	}
+#endif
+	return ret;
 }
 
 uint32_t render_audio_syncs_per_sec(void)
@@ -1354,73 +1732,423 @@ void render_save_screenshot(char *path)
 	screenshot_path = path;
 }
 
-uint8_t render_create_window(char *caption, uint32_t width, uint32_t height, window_close_handler close_handler)
+#ifndef DISABLE_ZLIB
+static apng_state *apng;
+static FILE *apng_file;
+#endif
+uint8_t render_saving_video(void)
+{
+#ifndef DISABLE_ZLIB
+	return apng_file != NULL;
+#else
+	return 0;
+#endif
+}
+
+void render_end_video(void)
+{
+#ifndef DISABLE_ZLIB
+	if (apng) {
+		puts("Ending recording");
+		end_apng(apng_file, apng);
+		apng = NULL;
+		apng_file = NULL;
+	}
+#endif
+}
+void render_save_video(char *path)
+{
+	render_end_video();
+#ifndef DISABLE_ZLIB
+	apng_file = fopen(path, "wb");
+	if (apng_file) {
+		printf("Saving video to %s\n", path);
+	} else {
+		warning("Failed to open %s for writing\n", path);
+	}
+#endif
+	free(path);
+}
+
+#ifdef GL_DEBUG_OUTPUT
+void GLAPIENTRY gl_message_callback(GLenum source, GLenum type, GLenum id, GLenum severity, GLsizei length, const GLchar *message, const void *user)
+{
+	fprintf(stderr, "GL Message: %d, %d, %d - %s\n", source, type, severity, message);
+}
+#endif
+
+uint8_t render_create_window_tex(char *caption, uint32_t width, uint32_t height, uint32_t tex_width, uint32_t tex_height, window_close_handler close_handler)
 {
 	uint8_t win_idx = 0xFF;
-	for (int i = 0; i < num_textures - FRAMEBUFFER_USER_START; i++)
+	for (int i = 0; i < num_extras; i++)
 	{
-		if (!extra_windows[i]) {
+		if (!extras[i].win) {
 			win_idx = i;
 			break;
 		}
 	}
-	
+
 	if (win_idx == 0xFF) {
-		num_textures++;
-		sdl_textures = realloc(sdl_textures, num_textures * sizeof(*sdl_textures));
-		extra_windows = realloc(extra_windows, (num_textures - FRAMEBUFFER_USER_START) * sizeof(*extra_windows));
-		extra_renderers = realloc(extra_renderers, (num_textures - FRAMEBUFFER_USER_START) * sizeof(*extra_renderers));
-		close_handlers = realloc(close_handlers, (num_textures - FRAMEBUFFER_USER_START) * sizeof(*close_handlers));
-		win_idx = num_textures - FRAMEBUFFER_USER_START - 1;
+		num_extras++;
+		extras = realloc(extras, num_extras * sizeof(*extras));
+		win_idx = num_extras - 1;
 	}
-	extra_windows[win_idx] = SDL_CreateWindow(caption, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width, height, 0);
-	if (!extra_windows[win_idx]) {
+	memset(&extras[win_idx], 0, sizeof(extra_window));
+	uint32_t flags = 0;
+#ifndef DISABLE_OPENGL
+	if (render_gl) {
+		flags |= SDL_WINDOW_OPENGL;
+	}
+#endif
+	int x = SDL_WINDOWPOS_UNDEFINED;
+	int y = SDL_WINDOWPOS_UNDEFINED;
+	SDL_GetWindowPosition(main_window, &x, &y);
+	if (x != SDL_WINDOWPOS_UNDEFINED) {
+		x += main_width;
+	}
+	extras[win_idx].win = SDL_CreateWindow(caption, x, y, width, height, flags);
+	if (!extras[win_idx].win) {
 		goto fail_window;
 	}
-	extra_renderers[win_idx] = SDL_CreateRenderer(extra_windows[win_idx], -1, SDL_RENDERER_ACCELERATED);
-	if (!extra_renderers[win_idx]) {
-		goto fail_renderer;
+	extras[win_idx].width = width;
+	extras[win_idx].height = height;
+#ifndef DISABLE_OPENGL
+	if (render_gl) {
+		extras[win_idx].gl_context = SDL_GL_CreateContext(extras[win_idx].win);
+		SDL_GL_MakeCurrent(extras[win_idx].win, extras[win_idx].gl_context);
+#ifdef GL_DEBUG_OUTPUT
+		glEnable(GL_DEBUG_OUTPUT);
+		if (glDebugMessageCallback) {
+			glDebugMessageCallback(gl_message_callback, NULL);
+		}
+#endif
+		glGenTextures(2, extras[win_idx].gl_texture);
+		for (int i = 0; i < 2; i++)
+		{
+			glBindTexture(GL_TEXTURE_2D, extras[win_idx].gl_texture[i]);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			if (i) {
+				glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, 1, 1, 0, SRC_FORMAT, SRC_TYPE, extras[win_idx].color);
+			} else {
+				extras[win_idx].tex_width = extras[win_idx].orig_tex_width = tex_width;
+				extras[win_idx].tex_height = extras[win_idx].orig_tex_height = tex_height;
+				char *npot_textures = tern_find_path_default(config, "video\0npot_textures\0", (tern_val){.ptrval = "off"}, TVAL_PTR).ptrval;
+				if (strcmp(npot_textures, "on")) {
+					extras[win_idx].tex_width = nearest_pow2(tex_width);
+					extras[win_idx].tex_height = nearest_pow2(tex_height);
+				}
+				extras[win_idx].texture_buf = calloc(PITCH_PIXEL_T(extras[win_idx].tex_width) * extras[win_idx].tex_height, sizeof(pixel_t));
+				glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, extras[win_idx].tex_width, extras[win_idx].tex_height, 0, SRC_FORMAT, SRC_TYPE, extras[win_idx].texture_buf);
+			}
+		}
+		glGenBuffers(3, extras[win_idx].gl_buffers);
+		glBindBuffer(GL_ARRAY_BUFFER, extras[win_idx].gl_buffers[0]);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data_default), vertex_data_default, GL_STATIC_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, extras[win_idx].gl_buffers[1]);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(element_data), element_data, GL_STATIC_DRAW);
+		glBindBuffer(GL_ARRAY_BUFFER, extras[win_idx].gl_buffers[2]);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(uvs), uvs, GL_STATIC_DRAW);
+		extras[win_idx].vshader = load_shader("extra_window.v.glsl", GL_VERTEX_SHADER);
+		extras[win_idx].fshader = load_shader("extra_window.f.glsl", GL_FRAGMENT_SHADER);
+		extras[win_idx].program = glCreateProgram();
+		glAttachShader(program, extras[win_idx].vshader);
+		glAttachShader(program, extras[win_idx].fshader);
+		glLinkProgram(extras[win_idx].program);
+		GLint link_status;
+		glGetProgramiv(program, GL_LINK_STATUS, &link_status);
+		if (!link_status) {
+			fputs("Failed to link shader program\n", stderr);
+			//TODO: cleanup
+			goto sdl_renderer;
+		}
+		extras[win_idx].un_texture = glGetUniformLocation(program, "texture");
+		extras[win_idx].un_width = glGetUniformLocation(program, "width");
+		extras[win_idx].un_height = glGetUniformLocation(program, "height");
+		extras[win_idx].at_pos = glGetAttribLocation(program, "pos");
+		extras[win_idx].at_uv = glGetAttribLocation(program, "uv");
+		extras[win_idx].color[3] = 255;
+	} else {
+sdl_renderer:
+#endif
+		extras[win_idx].renderer = SDL_CreateRenderer(extras[win_idx].win, -1, SDL_RENDERER_ACCELERATED);
+		if (!extras[win_idx].renderer) {
+			goto fail_renderer;
+		}
+		extras[win_idx].sdl_texture = SDL_CreateTexture(extras[win_idx].renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, tex_width, tex_height);
+		if (!extras[win_idx].sdl_texture) {
+			goto fail_texture;
+		}
+#ifndef DISABLE_OPENGL
 	}
-	uint8_t texture_idx = win_idx + FRAMEBUFFER_USER_START;
-	sdl_textures[texture_idx] = SDL_CreateTexture(extra_renderers[win_idx], SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-	if (!sdl_textures[texture_idx]) {
-		goto fail_texture;
-	}
-	close_handlers[win_idx] = close_handler;
-	return texture_idx;
-	
+#endif
+	extras[win_idx].on_close = close_handler;
+	return win_idx + FRAMEBUFFER_USER_START;
+
 fail_texture:
-	SDL_DestroyRenderer(extra_renderers[win_idx]);
+	SDL_DestroyRenderer(extras[win_idx].renderer);
 fail_renderer:
-	SDL_DestroyWindow(extra_windows[win_idx]);
+	SDL_DestroyWindow(extras[win_idx].win);
 fail_window:
-	num_textures--;
 	return 0;
 }
+
+uint8_t render_create_window(char *caption, uint32_t width, uint32_t height, window_close_handler close_handler)
+{
+	return render_create_window_tex(caption, width, height, width, height, close_handler);
+}
+
+#ifndef DISABLE_OPENGL
+uint32_t render_get_window_texture(uint8_t which)
+{
+	return extras[which - FRAMEBUFFER_USER_START].gl_texture[0];
+}
+#endif
 
 void render_destroy_window(uint8_t which)
 {
 	uint8_t win_idx = which - FRAMEBUFFER_USER_START;
-	//Destroying the renderers also frees the textures
-	SDL_DestroyRenderer(extra_renderers[win_idx]);
-	SDL_DestroyWindow(extra_windows[win_idx]);
-	
-	extra_renderers[win_idx] = NULL;
-	extra_windows[win_idx] = NULL;
+	if (extras[win_idx].renderer) {
+		//Destroying the renderers also frees the textures
+		SDL_DestroyRenderer(extras[win_idx].renderer);
+		extras[win_idx].renderer = NULL;
+		free (extras[win_idx].static_images);
+		extras[win_idx].static_images = NULL;
+	}
+#ifndef DISABLE_OPENGL
+	else {
+		SDL_GL_MakeCurrent(extras[win_idx].win, extras[win_idx].gl_context);
+		glDeleteProgram(extras[win_idx].program);
+		glDeleteShader(extras[win_idx].vshader);
+		glDeleteShader(extras[win_idx].fshader);
+		glDeleteBuffers(3, extras[win_idx].gl_buffers);
+		glDeleteTextures(2, extras[win_idx].gl_texture);
+		for (uint8_t i = 0; i < extras[win_idx].num_static; i++)
+		{
+			if (extras[win_idx].gl_static_images[i]) {
+				glDeleteTextures(1, extras[win_idx].gl_static_images + i);
+			}
+		}
+		SDL_GL_DeleteContext(extras[win_idx].gl_context);
+		free(extras[win_idx].image_vertices);
+		extras[win_idx].image_vertices = NULL;
+		free(extras[win_idx].gl_static_images);
+		extras[win_idx].gl_static_images = NULL;
+	}
+#endif
+	SDL_DestroyWindow(extras[win_idx].win);
+
+	extras[win_idx].win = NULL;
+	extras[win_idx].num_static = 0;
 }
 
-uint32_t *locked_pixels;
+#ifndef DISABLE_OPENGL
+static void extra_draw_quad(extra_window *extra, GLuint texture, float width, float height)
+{
+	glUseProgram(extra->program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glUniform1i(extra->un_texture, 0);
+	
+	glUniform1f(extra->un_width, width);
+	glUniform1f(extra->un_height, height);
+	
+	glVertexAttribPointer(extra->at_pos, 2, GL_FLOAT, GL_FALSE, sizeof(GLfloat[2]), (void *)0);
+	glEnableVertexAttribArray(extra->at_pos);
+	
+	glBindBuffer(GL_ARRAY_BUFFER, extra->gl_buffers[2]);
+	glVertexAttribPointer(extra->at_uv, 2, GL_FLOAT, GL_FALSE, sizeof(GLfloat[2]), (void *)0);
+	glEnableVertexAttribArray(extra->at_uv);
+	
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, extra->gl_buffers[1]);
+	glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void *)0);
+	glDisableVertexAttribArray(extra->at_pos);
+	glDisableVertexAttribArray(extra->at_uv);
+}
+#endif
+
+uint8_t render_static_image(uint8_t window, uint8_t *buffer, uint32_t size)
+{
+	window -= FRAMEBUFFER_USER_START;
+	extra_window *extra = extras + window;
+	uint32_t width, height;
+	uint32_t *pixels = load_png(buffer, size, &width, &height);
+	if (!pixels) {
+		return 0xFF;
+	}
+	uint8_t img_index = 0;
+	if (!extra->num_static) {
+		extra->num_static = 8;
+#ifndef DISABLE_OPENGL
+		if (render_gl) {
+			extra->gl_static_images = calloc(extra->num_static, sizeof(GLuint));
+			extra->image_vertices = malloc(sizeof(vertex_data_default));
+			memcpy(extra->image_vertices, vertex_data_default, sizeof(vertex_data_default));
+			SDL_GL_MakeCurrent(extra->win, extra->gl_context);
+			glGenBuffers(1, &extra->image_buffer);
+			glBindBuffer(GL_ARRAY_BUFFER, extra->image_buffer);
+			glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data_default), extra->image_vertices, GL_DYNAMIC_DRAW);
+		} else 
+#endif
+		{
+			extra->static_images = calloc(extra->num_static, sizeof(SDL_Texture*));
+		}
+	}
+	for (; img_index < extra->num_static; img_index++)
+	{
+#ifndef DISABLE_OPENGL
+		if (render_gl) {
+			if (!extra->gl_static_images[img_index]) {
+				break;
+			}
+		} else
+#endif
+		if (!extra->static_images[img_index]) {
+			break;
+		}
+	}
+	if (img_index == extra->num_static) {
+		extra->num_static *= 2;
+#ifndef DISABLE_OPENGL
+		if (render_gl) {
+			extra->gl_static_images = realloc(extra->static_images, extra->num_static * sizeof(GLuint));
+		} else 
+#endif
+		{
+			extra->static_images = realloc(extra->static_images, extra->num_static * sizeof(SDL_Texture*));
+		}
+	}
+#ifndef DISABLE_OPENGL
+	if (render_gl) {
+		SDL_GL_MakeCurrent(extra->win, extra->gl_context);
+		
+		glGenTextures(1, extra->gl_static_images + img_index);
+		glBindTexture(GL_TEXTURE_2D, extra->gl_static_images[img_index]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		//TODO: maybe make this respect the npot texture setting?
+		glTexImage2D(GL_TEXTURE_2D, 0, INTERNAL_FORMAT, width, height, 0, SRC_FORMAT32, GL_UNSIGNED_BYTE, pixels);
+	} else
+#endif
+	{
+		extra->static_images[img_index] = SDL_CreateTexture(extra->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+		SDL_UpdateTexture(extra->static_images[img_index], NULL, pixels, sizeof(pixel_t) * width);
+	}
+	free(pixels);
+	return img_index;
+}
+
+#ifndef DISABLE_OPENGL
+static void extra_update_verts(extra_window *extra, int x, int y, int width, int height)
+{
+	memcpy(extra->image_vertices, vertex_data_default, sizeof(vertex_data_default));
+	extra->image_vertices[0] = extra->image_vertices[4] = 2.0f * x / (float)extra->width - 1.0f;
+	extra->image_vertices[2] = extra->image_vertices[6] = 2.0f * (x + width) / (float)extra->width - 1.0f;
+	extra->image_vertices[1] = extra->image_vertices[3] = -2.0f * (y + height) / (float)extra->height + 1.0f;
+	extra->image_vertices[5] = extra->image_vertices[7] = -2.0f * y / (float)extra->height + 1.0f;
+	
+	SDL_GL_MakeCurrent(extra->win, extra->gl_context);
+	glBindBuffer(GL_ARRAY_BUFFER, extra->image_buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data_default), extra->image_vertices, GL_DYNAMIC_DRAW);
+}
+#endif
+
+void render_draw_image(uint8_t window, uint8_t image, int x, int y, int width, int height)
+{
+	extra_window *extra = extras + window - FRAMEBUFFER_USER_START;
+	if (extra->renderer) {
+		SDL_Rect dst = {
+			.x = x,
+			.y = y,
+			.w = width,
+			.h = height
+		};
+		SDL_RenderCopy(extra->renderer, extra->static_images[image], NULL, &dst);
+	}
+#ifndef DISABLE_OPENGL
+	else {
+		extra_update_verts(extra, x, y, width, height);
+		extra_draw_quad(extra, extra->gl_static_images[image], 1.0f, 1.0f);
+	}
+#endif
+}
+
+void render_clear_window(uint8_t window, uint8_t r, uint8_t g, uint8_t b)
+{
+	uint8_t win_idx = window - FRAMEBUFFER_USER_START;
+	if (extras[win_idx].renderer) {
+		SDL_SetRenderDrawColor(extras[win_idx].renderer, r, g, b, 255);
+		SDL_RenderClear(extras[win_idx].renderer);
+	}
+#ifndef DISABLE_OPENGL
+	else {
+		SDL_GL_MakeCurrent(extras[win_idx].win, extras[win_idx].gl_context);
+		glClearColor(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	}
+#endif
+}
+
+void render_fill_rect(uint8_t window, uint8_t r, uint8_t g, uint8_t b, int x, int y, int width, int height)
+{
+	extra_window *extra = extras + window - FRAMEBUFFER_USER_START;
+	if (extra->renderer) {
+		SDL_SetRenderDrawColor(extra->renderer, r, g, b, 255);
+		SDL_Rect dst = {
+			.x = x,
+			.y = y,
+			.w = width,
+			.h = height
+		};
+		SDL_RenderFillRect(extra->renderer, &dst);
+	}
+#ifndef DISABLE_OPENGL
+	else {
+		if (!extra->image_vertices) {
+			extra->image_vertices = malloc(sizeof(vertex_data_default));
+			SDL_GL_MakeCurrent(extra->win, extra->gl_context);
+			glGenBuffers(1, &extra->image_buffer);
+		}
+		extra_update_verts(extra, x, y, width, height);
+		extra->color[0] = b;
+		extra->color[1] = g;
+		extra->color[2] = r;
+		glBindTexture(GL_TEXTURE_2D, extra->gl_texture[1]);
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, SRC_FORMAT, SRC_TYPE, extra->color);
+		extra_draw_quad(extra, extra->gl_texture[1], 1.0f, 1.0f);
+	}
+#endif
+}
+
+void render_window_refresh(uint8_t window)
+{
+	uint8_t win_idx = window - FRAMEBUFFER_USER_START;
+	if (extras[win_idx].renderer) {
+		SDL_RenderPresent(extras[win_idx].renderer);
+	}
+#ifndef DISABLE_OPENGL
+	else {
+		SDL_GL_SwapWindow(extras[win_idx].win);
+	}
+#endif
+}
+
+pixel_t *locked_pixels;
 uint32_t locked_pitch;
-uint32_t *render_get_framebuffer(uint8_t which, int *pitch)
+pixel_t *render_get_framebuffer(uint8_t which, int *pitch)
 {
 	if (sync_src == SYNC_AUDIO_THREAD || sync_src == SYNC_EXTERNAL) {
-		*pitch = LINEBUF_SIZE * sizeof(uint32_t);
-		uint32_t *buffer;
+		*pitch = PITCH_BYTES(LINEBUF_SIZE);
+		pixel_t *buffer;
 		SDL_LockMutex(free_buffer_mutex);
 			if (num_buffers) {
 				buffer = frame_buffers[--num_buffers];
 			} else {
-				buffer = calloc(tex_width*(tex_height + 1), sizeof(uint32_t));
+				buffer = calloc(tex_width*(tex_height + 1), sizeof(pixel_t));
 			}
 		SDL_UnlockMutex(free_buffer_mutex);
 		locked_pixels = buffer;
@@ -1428,25 +2156,36 @@ uint32_t *render_get_framebuffer(uint8_t which, int *pitch)
 	}
 #ifndef DISABLE_OPENGL
 	if (render_gl && which <= FRAMEBUFFER_EVEN) {
-		*pitch = LINEBUF_SIZE * sizeof(uint32_t);
+		*pitch = PITCH_BYTES(LINEBUF_SIZE);
 		return texture_buf;
+	} else if (render_gl && which >= FRAMEBUFFER_USER_START) {
+		uint8_t win_idx = which - FRAMEBUFFER_USER_START;
+		*pitch = PITCH_BYTES(extras[win_idx].orig_tex_width);
+		return extras[win_idx].texture_buf;
 	} else {
 #endif
 		if (which == FRAMEBUFFER_UI && !sdl_textures[which]) {
 			sdl_textures[which] = SDL_CreateTexture(main_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, main_width, main_height);
 		}
-		if (which >= num_textures) {
-			warning("Request for invalid framebuffer number %d\n", which);
-			return NULL;
+		SDL_Texture *tex;
+		if (which >= FRAMEBUFFER_USER_START) {
+			uint8_t win_idx = which - FRAMEBUFFER_USER_START;
+			if (win_idx >= num_extras || !extras[win_idx].renderer) {
+				warning("Request for invalid framebuffer number %d\n", which);
+				return NULL;
+			}
+			tex = extras[win_idx].sdl_texture;
+		} else {
+			tex = sdl_textures[which];
 		}
 		uint8_t *pixels;
-		if (SDL_LockTexture(sdl_textures[which], NULL, (void **)&pixels, pitch) < 0) {
+		if (SDL_LockTexture(tex, NULL, (void **)&pixels, pitch) < 0) {
 			warning("Failed to lock texture: %s\n", SDL_GetError());
 			return NULL;
 		}
 		static uint8_t last;
 		if (which <= FRAMEBUFFER_EVEN) {
-			locked_pixels = (uint32_t *)pixels;
+			locked_pixels = (pixel_t *)pixels;
 			if (which == FRAMEBUFFER_EVEN) {
 				pixels += *pitch;
 			}
@@ -1456,18 +2195,18 @@ uint32_t *render_get_framebuffer(uint8_t which, int *pitch)
 			}
 			last = which;
 		}
-		return (uint32_t *)pixels;
+		return (pixel_t *)pixels;
 #ifndef DISABLE_OPENGL
 	}
 #endif
 }
 
-static void release_buffer(uint32_t *buffer)
+static void release_buffer(pixel_t *buffer)
 {
 	SDL_LockMutex(free_buffer_mutex);
 		if (num_buffers == buffer_storage) {
 			buffer_storage *= 2;
-			frame_buffers = realloc(frame_buffers, sizeof(uint32_t*)*buffer_storage);
+			frame_buffers = realloc(frame_buffers, sizeof(pixel_t*)*buffer_storage);
 		}
 		frame_buffers[num_buffers++] = buffer;
 	SDL_UnlockMutex(free_buffer_mutex);
@@ -1481,10 +2220,9 @@ uint8_t events_processed;
 #endif
 
 static uint32_t last_width, last_height;
-static uint8_t interlaced;
-static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
+static uint8_t interlaced, last_field;
+static void process_framebuffer(pixel_t *buffer, uint8_t which, int width)
 {
-	static uint8_t last;
 	if (sync_src == SYNC_VIDEO && which <= FRAMEBUFFER_EVEN && source_frame_count < 0) {
 		source_frame++;
 		if (source_frame >= source_hz) {
@@ -1494,55 +2232,70 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 		//TODO: Figure out what to do about SDL Render API texture locking
 		return;
 	}
-	
-	last_width = width;
-	uint32_t height = which <= FRAMEBUFFER_EVEN 
-		? (video_standard == VID_NTSC ? 243 : 294) - (overscan_top[video_standard] + overscan_bot[video_standard])
+
+	uint32_t height = which <= FRAMEBUFFER_EVEN
+		? (video_standard == VID_PAL ? 294 : 243) - (overscan_top[video_standard] + overscan_bot[video_standard])
 		: 240;
 	FILE *screenshot_file = NULL;
-	uint32_t shot_height, shot_width;
 	char *ext;
-	if (screenshot_path && which == FRAMEBUFFER_ODD) {
-		screenshot_file = fopen(screenshot_path, "wb");
-		if (screenshot_file) {
+	if (which < FRAMEBUFFER_UI) {
+		last_width = width;
+		width -= overscan_left[video_standard] + overscan_right[video_standard];
+		if (screenshot_path && which == FRAMEBUFFER_ODD) {
+			screenshot_file = fopen(screenshot_path, "wb");
+			if (screenshot_file) {
 #ifndef DISABLE_ZLIB
-			ext = path_extension(screenshot_path);
+				ext = path_extension(screenshot_path);
 #endif
-			debug_message("Saving screenshot to %s\n", screenshot_path);
-		} else {
-			warning("Failed to open screenshot file %s for writing\n", screenshot_path);
+				debug_message("Saving screenshot to %s\n", screenshot_path);
+			} else {
+				warning("Failed to open screenshot file %s for writing\n", screenshot_path);
+			}
+			free(screenshot_path);
+			screenshot_path = NULL;
 		}
-		free(screenshot_path);
-		screenshot_path = NULL;
-		shot_height = video_standard == VID_NTSC ? 243 : 294;
-		shot_width = width;
+		interlaced = last_field != which;
+		buffer += overscan_left[video_standard] + PITCH_PIXEL_T(LINEBUF_SIZE) * overscan_top[video_standard];
 	}
-	interlaced = last != which;
-	width -= overscan_left[video_standard] + overscan_right[video_standard];
 #ifndef DISABLE_OPENGL
 	if (render_gl && which <= FRAMEBUFFER_EVEN) {
 		SDL_GL_MakeCurrent(main_window, main_context);
 		glBindTexture(GL_TEXTURE_2D, textures[which]);
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, LINEBUF_SIZE, height, SRC_FORMAT, GL_UNSIGNED_BYTE, buffer + overscan_left[video_standard] + LINEBUF_SIZE * overscan_top[video_standard]);
-		
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, LINEBUF_SIZE, height, SRC_FORMAT, SRC_TYPE, buffer);
+
 		if (screenshot_file) {
 			//properly supporting interlaced modes here is non-trivial, so only save the odd field for now
 #ifndef DISABLE_ZLIB
 			if (!strcasecmp(ext, "png")) {
 				free(ext);
-				save_png(screenshot_file, buffer, shot_width, shot_height, LINEBUF_SIZE*sizeof(uint32_t));
+				save_png(screenshot_file, buffer, width, height, PITCH_BYTES(LINEBUF_SIZE));
 			} else {
 				free(ext);
 #endif
-				save_ppm(screenshot_file, buffer, shot_width, shot_height, LINEBUF_SIZE*sizeof(uint32_t));
+				save_ppm(screenshot_file, buffer, width, height, PITCH_BYTES(LINEBUF_SIZE));
 #ifndef DISABLE_ZLIB
 			}
 #endif
 		}
+#ifndef DISABLE_ZLIB
+		if (apng_file) {
+			if (!apng) {
+				//TODO: more precise frame rate
+				apng = start_apng(apng_file, width, height, video_standard == VID_PAL ? 50.0 : 60.0);
+			}
+			save_png24_frame(apng_file, buffer, apng, width, height, PITCH_BYTES(LINEBUF_SIZE));
+		}
+#endif
+	} else if (render_gl && which >= FRAMEBUFFER_USER_START) {
+		uint8_t win_idx = which - FRAMEBUFFER_USER_START;
+		SDL_GL_MakeCurrent(extras[win_idx].win, extras[win_idx].gl_context);
+		glBindTexture(GL_TEXTURE_2D, extras[win_idx].gl_texture[0]);
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, extras[win_idx].orig_tex_width, extras[win_idx].orig_tex_height, SRC_FORMAT, SRC_TYPE, buffer);
 	} else {
 #endif
+		uint32_t shot_height = height;
 		//TODO: Support SYNC_AUDIO_THREAD/SYNC_EXTERNAL for render API framebuffers
-		if (which <= FRAMEBUFFER_EVEN && last != which) {
+		if (which <= FRAMEBUFFER_EVEN && last_field != which) {
 			uint8_t *cur_dst = (uint8_t *)locked_pixels;
 			uint8_t *cur_saved = (uint8_t *)texture_buf;
 			uint32_t dst_off = which == FRAMEBUFFER_EVEN ? 0 : locked_pitch;
@@ -1568,11 +2321,11 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 #ifndef DISABLE_ZLIB
 			if (!strcasecmp(ext, "png")) {
 				free(ext);
-				save_png(screenshot_file, locked_pixels, shot_width, shot_height, shot_pitch);
+				save_png(screenshot_file, locked_pixels, width, shot_height, shot_pitch);
 			} else {
 				free(ext);
 #endif
-				save_ppm(screenshot_file, locked_pixels, shot_width, shot_height, shot_pitch);
+				save_ppm(screenshot_file, locked_pixels, width, shot_height, shot_pitch);
 #ifndef DISABLE_ZLIB
 			}
 #endif
@@ -1581,8 +2334,8 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 #ifndef DISABLE_OPENGL
 	}
 #endif
-	last_height = height;
 	if (which <= FRAMEBUFFER_EVEN) {
+		last_height = height;
 		render_update_display();
 	} else if (which == FRAMEBUFFER_UI) {
 		SDL_RenderCopy(main_renderer, sdl_textures[which], NULL, NULL);
@@ -1595,14 +2348,36 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 			need_ui_fb_resize = 0;
 		}
 	} else {
-		SDL_RenderCopy(extra_renderers[which - FRAMEBUFFER_USER_START], sdl_textures[which], NULL, NULL);
-		SDL_RenderPresent(extra_renderers[which - FRAMEBUFFER_USER_START]);
+		uint8_t win_idx = which - FRAMEBUFFER_USER_START;
+		if (extras[win_idx].renderer) {
+			SDL_RenderCopy(extras[win_idx].renderer, extras[win_idx].sdl_texture, NULL, NULL);
+			SDL_RenderPresent(extras[win_idx].renderer);
+		}
+#ifndef DISABLE_OPENGL
+		else {
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+			if (extras[win_idx].on_render) {
+				extras[win_idx].on_render();
+			} else {
+				glBindBuffer(GL_ARRAY_BUFFER, extras[win_idx].gl_buffers[0]);
+				extra_draw_quad(
+					extras + win_idx,
+					extras[win_idx].gl_texture[0], 
+					(float)extras[win_idx].orig_tex_width / (float)extras[win_idx].tex_width,
+					(float)extras[win_idx].orig_tex_height / (float)extras[win_idx].tex_height
+				);
+			}
+			
+			SDL_GL_SwapWindow(extras[win_idx].win);
+		}
+#endif
 	}
 	if (screenshot_file) {
 		fclose(screenshot_file);
 	}
 	if (which <= FRAMEBUFFER_EVEN) {
-		last = which;
+		last_field = which;
 		static uint32_t frame_counter, start;
 		frame_counter++;
 		last_frame= SDL_GetTicks();
@@ -1646,7 +2421,7 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 			|| (average_change >0 && local_cur_min > 5 * min_buffered / 4)
 			|| cur_min_buffered < 0
 		) {
-			
+
 			if (cur_min_buffered < 0) {
 				adjust_ratio = max_adjust;
 				SDL_PauseAudio(1);
@@ -1665,7 +2440,7 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 		if (adjust_ratio != 0.0f) {
 			average_change = 0;
 			render_audio_adjust_speed(adjust_ratio);
-			
+
 		}
 		while (source_frame_count > 0)
 		{
@@ -1681,7 +2456,7 @@ static void process_framebuffer(uint32_t *buffer, uint8_t which, int width)
 }
 
 typedef struct {
-	uint32_t *buffer;
+	pixel_t *buffer;
 	int      width;
 	uint8_t  which;
 } frame;
@@ -1690,7 +2465,7 @@ int frame_queue_len, frame_queue_read, frame_queue_write;
 
 void render_framebuffer_updated(uint8_t which, int width)
 {
-	if (sync_src == SYNC_AUDIO_THREAD || sync_src == SYNC_EXTERNAL) {
+	if (which < FRAMEBUFFER_USER_START && (sync_src == SYNC_AUDIO_THREAD || sync_src == SYNC_EXTERNAL)) {
 		SDL_LockMutex(frame_mutex);
 			while (frame_queue_len == 4) {
 				SDL_CondSignal(frame_ready);
@@ -1720,10 +2495,24 @@ void render_framebuffer_updated(uint8_t which, int width)
 			frame_queue_len++;
 			SDL_CondSignal(frame_ready);
 		SDL_UnlockMutex(frame_mutex);
+#ifdef __ANDROID__
+		if (which <= FRAMEBUFFER_EVEN) {
+			static uint32_t frame_counter, start;
+			frame_counter++;
+			uint32_t last_frame= SDL_GetTicks();
+			if ((last_frame - start) > FPS_INTERVAL) {
+				if (start && (last_frame-start)) {
+					debug_message("%s - %.1f fps (emulated)", caption, ((float)frame_counter) / (((float)(last_frame-start)) / 1000.0));
+				}
+				start = last_frame;
+				frame_counter = 0;
+			}
+		}
+#endif
 		return;
 	}
 	//TODO: Maybe fixme for render API
-	process_framebuffer(texture_buf, which, width);
+	process_framebuffer(which < FRAMEBUFFER_USER_START ? texture_buf : extras[which - FRAMEBUFFER_USER_START].texture_buf, which, width);
 }
 
 void render_video_loop(void)
@@ -1735,7 +2524,7 @@ void render_video_loop(void)
 	SDL_LockMutex(frame_mutex);
 		for(;;)
 		{
-			while (!frame_queue_len && SDL_GetAudioStatus() == SDL_AUDIO_PLAYING)
+			while (!frame_queue_len && audio_active)
 			{
 				SDL_CondWait(frame_ready, frame_mutex);
 			}
@@ -1749,24 +2538,46 @@ void render_video_loop(void)
 				release_buffer(f.buffer);
 				SDL_LockMutex(frame_mutex);
 			}
-			if (SDL_GetAudioStatus() != SDL_AUDIO_PLAYING) {
+			if (!audio_active) {
 				break;
 			}
 		}
-	
+
 	SDL_UnlockMutex(frame_mutex);
 }
 
 static ui_render_fun render_ui;
-void render_set_ui_render_fun(ui_render_fun fun)
+void render_set_ui_render_fun(uint8_t which, ui_render_fun fun)
 {
-	render_ui = fun;
+	if (which < FRAMEBUFFER_USER_START) {
+		render_ui = fun;
+	} else {
+		extras[which - FRAMEBUFFER_USER_START].on_render = fun;
+	}
+}
+
+static ui_render_fun frame_presented;
+void render_set_frame_presented_fun(ui_render_fun fun)
+{
+	frame_presented = fun;
 }
 
 void render_update_display()
 {
+	static uint8_t last_was_paused;
+	if (current_system) {
+		if (current_system->paused && !last_was_paused) {
+			if (!fps_caption) {
+				fps_caption = malloc(strlen(caption) + strlen(" - 100000000.1 fps") + 1);
+			}
+			sprintf(fps_caption, "%s - PAUSED", caption);
+			SDL_SetWindowTitle(main_window, fps_caption);
+		}
+		last_was_paused = current_system->paused;
+	}
 #ifndef DISABLE_OPENGL
 	if (render_gl) {
+		SDL_GL_MakeCurrent(main_window, main_context);
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1776,12 +2587,27 @@ void render_update_display()
 		glUniform1i(un_textures[0], 0);
 
 		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, textures[interlaced ? 1 : scanlines ? 2 : 0]);
+		int bot_texture = 2; //black texture
+		if (interlaced) {
+			bot_texture = 1;
+		} else if (!scanlines && un_scanlines == -1) {
+			bot_texture = 0;
+		}
+		glBindTexture(GL_TEXTURE_2D, textures[bot_texture]);
 		glUniform1i(un_textures[1], 1);
 
 		glUniform1f(un_width, render_emulated_width());
 		glUniform1f(un_height, last_height);
 		glUniform2f(un_texsize, tex_width, tex_height);
+		if (un_curfield != -1) {
+			glUniform1i(un_curfield, last_field);
+		}
+		if (un_interlaced != -1) {
+			glUniform1i(un_interlaced, interlaced);
+		}
+		if (un_scanlines != -1) {
+			glUniform1i(un_scanlines, scanlines);
+		}
 
 		glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
 		glVertexAttribPointer(at_pos, 2, GL_FLOAT, GL_FALSE, sizeof(GLfloat[2]), (void *)0);
@@ -1791,7 +2617,7 @@ void render_update_display()
 		glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void *)0);
 
 		glDisableVertexAttribArray(at_pos);
-		
+
 		if (render_ui) {
 			render_ui();
 		}
@@ -1819,6 +2645,9 @@ void render_update_display()
 		process_events();
 	}
 	events_processed = 0;
+	if (frame_presented) {
+		frame_presented();
+	}
 }
 
 uint32_t render_emulated_width()
@@ -1828,7 +2657,7 @@ uint32_t render_emulated_width()
 
 uint32_t render_emulated_height()
 {
-	return (video_standard == VID_NTSC ? 243 : 294) - overscan_top[video_standard] - overscan_bot[video_standard];
+	return (video_standard == VID_PAL ? 294 : 243) - overscan_top[video_standard] - overscan_bot[video_standard];
 }
 
 uint32_t render_overscan_left()
@@ -1863,7 +2692,10 @@ int render_lookup_button(char *name)
 	if (!button_lookup) {
 		for (int i = SDL_CONTROLLER_BUTTON_A; i < SDL_CONTROLLER_BUTTON_MAX; i++)
 		{
-			button_lookup = tern_insert_int(button_lookup, SDL_GameControllerGetStringForButton(i), i);
+			const char *bname = SDL_GameControllerGetStringForButton(i);
+			if (bname) {
+				button_lookup = tern_insert_int(button_lookup, bname, i);
+			}
 		}
 		//alternative Playstation-style names
 		button_lookup = tern_insert_int(button_lookup, "cross", SDL_CONTROLLER_BUTTON_A);
@@ -1902,7 +2734,7 @@ int32_t render_translate_input_name(int32_t controller, char *name, uint8_t is_a
 	if (controller > MAX_JOYSTICKS || !joysticks[controller]) {
 		return RENDER_NOT_PLUGGED_IN;
 	}
-	
+
 	if (!SDL_IsGameController(joystick_sdl_index[controller])) {
 		return RENDER_NOT_MAPPED;
 	}
@@ -1911,11 +2743,11 @@ int32_t render_translate_input_name(int32_t controller, char *name, uint8_t is_a
 		warning("Failed to open game controller %d: %s\n", controller, SDL_GetError());
 		return RENDER_NOT_PLUGGED_IN;
 	}
-	
+
 	SDL_GameControllerButtonBind cbind;
 	int32_t is_positive = RENDER_AXIS_POS;
 	if (is_axis) {
-		
+
 		int sdl_axis = render_lookup_axis(name);
 		if (sdl_axis == SDL_CONTROLLER_AXIS_INVALID) {
 			SDL_GameControllerClose(control);
@@ -1979,7 +2811,7 @@ void render_toggle_fullscreen()
 		return;
 	}
 	in_toggle = 1;
-	
+
 	//toggling too fast seems to cause a deadlock
 	static uint32_t last_toggle;
 	uint32_t cur = SDL_GetTicks();
@@ -1988,7 +2820,7 @@ void render_toggle_fullscreen()
 		return;
 	}
 	last_toggle = cur;
-	
+
 	drain_events();
 	is_fullscreen = !is_fullscreen;
 	if (is_fullscreen) {
@@ -2002,6 +2834,7 @@ void render_toggle_fullscreen()
 		SDL_SetWindowSize(main_window, mode.w, mode.h);
 	}
 	SDL_SetWindowFullscreen(main_window, is_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+	update_cursor();
 	//Since we change the window size on transition to full screen
 	//we need to set it back to normal so we can also go back to windowed mode
 	//normally you would think that this should only be done when actually transitioning
@@ -2049,10 +2882,10 @@ uint8_t render_get_active_framebuffer(void)
 	if (SDL_GetWindowFlags(main_window) & SDL_WINDOW_INPUT_FOCUS) {
 		return FRAMEBUFFER_ODD;
 	}
-	for (int i = 0; i < num_textures - 2; i++)
+	for (int i = 0; i < num_extras; i++)
 	{
-		if (extra_windows[i] && (SDL_GetWindowFlags(extra_windows[i]) & SDL_WINDOW_INPUT_FOCUS)) {
-			return FRAMEBUFFER_USER_START + i; 
+		if (extras[i].win && (SDL_GetWindowFlags(extras[i].win) & SDL_WINDOW_INPUT_FOCUS)) {
+			return FRAMEBUFFER_USER_START + i;
 		}
 	}
 	return 0xFF;
@@ -2062,4 +2895,12 @@ uint8_t render_create_thread(render_thread *thread, const char *name, render_thr
 {
 	*thread = SDL_CreateThread(fun, name, data);
 	return *thread != 0;
+}
+
+char *render_read_clipboard(void)
+{
+	char *tmp = SDL_GetClipboardText();
+	char *ret = strdup(tmp);
+	SDL_free(tmp);
+	return ret;
 }

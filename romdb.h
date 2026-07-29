@@ -16,7 +16,6 @@
 
 #include "tern.h"
 #include "serialize.h"
-#include "system_header.h"
 
 typedef struct {
 	uint32_t     start;
@@ -42,6 +41,7 @@ typedef struct {
 	uint8_t     bus_flags;
 } nor_state;
 
+// these get serialized in save states, so it is important they aren't reordered
 enum {
 	MAPPER_NONE,
 	MAPPER_SEGA,
@@ -49,7 +49,13 @@ enum {
 	MAPPER_REALTEC,
 	MAPPER_XBAND,
 	MAPPER_MULTI_GAME,
-	MAPPER_JCART
+	MAPPER_JCART,
+	MAPPER_SEGA_MED_V2,
+	MAPPER_SFT_WUKONG,
+	MAPPER_SMS_SEGA,
+	MAPPER_SMS_CODEMASTERS,
+	MAPPER_SMS_SUPER_GAME_30,
+	MAPPER_RADICA,
 };
 
 
@@ -79,19 +85,23 @@ struct rom_info {
 	uint8_t       mapper_type;
 	uint8_t       regions;
 	uint8_t       is_save_lock_on; //Does the save buffer actually belong to a lock-on cart?
+	uint8_t       wants_cd;
 };
 
-#define GAME_ID_OFF 0x183
-#define GAME_ID_LEN 8
+#define GAME_ID_OFF 0x180
+#define GAME_ID_LEN 11
 
-tern_node *load_rom_db();
+tern_node *get_rom_db();
 rom_info configure_rom(tern_node *rom_db, void *vrom, uint32_t rom_size, void *lock_on, uint32_t lock_on_size, memmap_chunk const *base_map, uint32_t base_chunks);
+rom_info configure_rom_32x(tern_node *rom_db, void *vrom, uint32_t rom_size, void *lock_on, uint32_t lock_on_size, memmap_chunk const *base_map, uint32_t base_chunks);
+rom_info configure_rom_sms(tern_node *rom_db, uint8_t *rom, uint32_t rom_size, memmap_chunk const *base_chunks, uint32_t num_base_chunks);
 rom_info configure_rom_heuristics(uint8_t *rom, uint32_t rom_size, memmap_chunk const *base_map, uint32_t base_chunks);
 uint8_t translate_region_char(uint8_t c);
 char const *save_type_name(uint8_t save_type);
 //Note: free_rom_info only frees things pointed to by a rom_info struct, not the struct itself
 //this is because rom_info structs are typically stack allocated
 void free_rom_info(rom_info *info);
+typedef struct system_header system_header;
 void cart_serialize(system_header *sys, serialize_buffer *buf);
 void cart_deserialize(deserialize_buffer *buf, void *vcontext);
 

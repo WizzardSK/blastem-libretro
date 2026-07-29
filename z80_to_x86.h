@@ -27,6 +27,12 @@ enum {
 	ZF_NUM
 };
 
+typedef struct {
+	uint16_t start;
+	uint16_t end;
+	uint8_t  check_change;
+} z80_watchpoint;
+
 typedef struct z80_context z80_context;
 typedef void (*z80_ctx_fun)(z80_context * context);
 
@@ -46,8 +52,11 @@ typedef struct {
 	code_ptr        write_16_lowfirst;
 	code_ptr		read_io;
 	code_ptr		write_io;
+	memmap_chunk const *io_memmap;
+	uint32_t        io_memmap_chunks;
 
 	uint32_t        flags;
+	uint16_t        io_address_mask;
 	int8_t          regs[Z80_UNUSED];
 	z80_ctx_fun     run;
 } z80_options;
@@ -78,6 +87,15 @@ struct z80_context {
 	uint32_t          int_pulse_start;
 	uint32_t          int_pulse_end;
 	uint32_t          nmi_start;
+	z80_watchpoint    *watchpoints;
+	uint32_t          num_watchpoints;
+	uint32_t          wp_storage;
+	uint16_t          watchpoint_min;
+	uint16_t          watchpoint_max;
+	uint16_t          wp_hit_address;
+	uint8_t           wp_hit_value;
+	uint8_t           wp_old_value;
+	uint8_t           wp_hit;
 	uint8_t           breakpoint_flags[(16 * 1024)/sizeof(uint8_t)];
 	uint8_t *         bp_handler;
 	uint8_t *         bp_stub;
@@ -100,8 +118,11 @@ code_ptr z80_get_native_address_trans(z80_context * context, uint32_t address);
 z80_context * z80_handle_code_write(uint32_t address, z80_context * context);
 void z80_invalidate_code_range(z80_context *context, uint32_t start, uint32_t end);
 void z80_reset(z80_context * context);
+void z80_clock_divider_updated(z80_options *options);
 void zinsert_breakpoint(z80_context * context, uint16_t address, uint8_t * bp_handler);
 void zremove_breakpoint(z80_context * context, uint16_t address);
+void z80_add_watchpoint(z80_context *context, uint16_t address, uint16_t size);
+void z80_remove_watchpoint(z80_context *context, uint32_t address, uint32_t size);
 void z80_run(z80_context * context, uint32_t target_cycle);
 void z80_assert_reset(z80_context * context, uint32_t cycle);
 void z80_clear_reset(z80_context * context, uint32_t cycle);
@@ -112,6 +133,7 @@ uint8_t z80_get_busack(z80_context * context, uint32_t cycle);
 void z80_adjust_cycles(z80_context * context, uint32_t deduction);
 void z80_serialize(z80_context *context, serialize_buffer *buf);
 void z80_deserialize(deserialize_buffer *buf, void *vcontext);
+uint32_t z80_get_instruction_start(z80_context *context, uint32_t address);
 
 #endif //Z80_TO_X86_H_
 

@@ -325,7 +325,7 @@ void z80_print_regs_exit(z80_context * context)
 
 void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, uint8_t interp)
 {
-	uint32_t num_cycles;
+	uint32_t num_cycles = 0;
 	host_ea src_op, dst_op;
 	uint8_t size;
 	z80_options *opts = context->options;
@@ -1337,12 +1337,12 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		jcc(code, CC_NZ, code->cur+2);
 		code_ptr no_corf_low = code->cur + 1;
 		jmp(code, code->cur + 2);
-		
+
 		*corf_low_range = code->cur - (corf_low_range + 1);
 		mov_ir(code, 0x90, opts->gen.scratch1, SZ_B);
 		*corf_low = code->cur - (corf_low + 1);
 		mov_ir(code, 0x06, opts->gen.scratch2, SZ_B);
-		
+
 		*no_corf_low = code->cur - (no_corf_low + 1);
 		cmp_irdisp(code, 0, opts->gen.context_reg, zf_off(ZF_C), SZ_B);
 		code_ptr corf_high = code->cur+1;
@@ -1354,16 +1354,16 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		or_ir(code, 0x60, opts->gen.scratch2, SZ_B);
 		mov_irdisp(code, 1, opts->gen.context_reg, zf_off(ZF_C), SZ_B);
 		*no_corf_high = code->cur - (no_corf_high + 1);
-		
+
 		mov_rr(code, opts->regs[Z80_A], opts->gen.scratch1, SZ_B);
 		xor_rr(code, opts->gen.scratch2, opts->gen.scratch1, SZ_B);
-		
+
 		cmp_irdisp(code, 0, opts->gen.context_reg, zf_off(ZF_N), SZ_B);
 		code_ptr not_sub = code->cur+1;
 		jcc(code, CC_Z, code->cur+2);
 		neg_r(code, opts->gen.scratch2, SZ_B);
 		*not_sub = code->cur - (not_sub + 1);
-		
+
 		add_rr(code, opts->gen.scratch2, opts->regs[Z80_A], SZ_B);
 		setcc_rdisp(code, CC_Z, opts->gen.context_reg, zf_off(ZF_Z));
 		setcc_rdisp(code, CC_S, opts->gen.context_reg, zf_off(ZF_S));
@@ -1896,7 +1896,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		} else {
 			mov_irdisp(code, 0, opts->gen.context_reg, zf_off(ZF_S), SZ_B);
 		}
-		
+
 		if ((inst->addr_mode & 0x1F) == Z80_REG) {
 			if (src_op.mode == MODE_REG_DIRECT) {
 				if (size == SZ_W) {
@@ -2353,7 +2353,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//read from IO (C)
 		zreg_to_native(opts, Z80_BC, opts->gen.scratch1);
 		call(code, opts->read_io);//T states 3
-		
+
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
@@ -2361,12 +2361,12 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//save value to be written for flag calculation, as the write func does not
 		//guarantee that it's preserved across the call
 		mov_rrdisp(code, opts->gen.scratch1, opts->gen.context_reg, offsetof(z80_context, scratch1), SZ_B);
-		
+
 		//write to (HL)
 		zreg_to_native(opts, Z80_HL, opts->gen.scratch2);
 		call(code, opts->write_8);//T states 4
 		cycles(&opts->gen, 1);
-		
+
 		//increment HL
 		if (opts->regs[Z80_HL] >= 0) {
 			add_ir(code, 1, opts->regs[Z80_HL], SZ_W);
@@ -2410,7 +2410,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//read from IO (C)
 		zreg_to_native(opts, Z80_BC, opts->gen.scratch1);
 		call(code, opts->read_io);//T states 3
-		
+
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
@@ -2418,12 +2418,12 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//save value to be written for flag calculation, as the write func does not
 		//guarantee that it's preserved across the call
 		mov_rrdisp(code, opts->gen.scratch1, opts->gen.context_reg, offsetof(z80_context, scratch1), SZ_B);
-		
+
 		//write to (HL)
 		zreg_to_native(opts, Z80_HL, opts->gen.scratch2);
 		call(code, opts->write_8);//T states 4
 		cycles(&opts->gen, 1);
-		
+
 		//increment HL
 		if (opts->regs[Z80_HL] >= 0) {
 			add_ir(code, 1, opts->regs[Z80_HL], SZ_W);
@@ -2478,7 +2478,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//read from IO (C)
 		zreg_to_native(opts, Z80_BC, opts->gen.scratch1);
 		call(code, opts->read_io);//T states 3
-		
+
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
@@ -2486,12 +2486,12 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//save value to be written for flag calculation, as the write func does not
 		//guarantee that it's preserved across the call
 		mov_rrdisp(code, opts->gen.scratch1, opts->gen.context_reg, offsetof(z80_context, scratch1), SZ_B);
-		
+
 		//write to (HL)
 		zreg_to_native(opts, Z80_HL, opts->gen.scratch2);
 		call(code, opts->write_8);//T states 4
 		cycles(&opts->gen, 1);
-		
+
 		//decrement HL
 		if (opts->regs[Z80_HL] >= 0) {
 			sub_ir(code, 1, opts->regs[Z80_HL], SZ_W);
@@ -2535,7 +2535,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//read from IO (C)
 		zreg_to_native(opts, Z80_BC, opts->gen.scratch1);
 		call(code, opts->read_io);//T states 3
-		
+
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
@@ -2543,12 +2543,12 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//save value to be written for flag calculation, as the write func does not
 		//guarantee that it's preserved across the call
 		mov_rrdisp(code, opts->gen.scratch1, opts->gen.context_reg, offsetof(z80_context, scratch1), SZ_B);
-		
+
 		//write to (HL)
 		zreg_to_native(opts, Z80_HL, opts->gen.scratch2);
 		call(code, opts->write_8);//T states 4
 		cycles(&opts->gen, 1);
-		
+
 		//decrement HL
 		if (opts->regs[Z80_HL] >= 0) {
 			sub_ir(code, 1, opts->regs[Z80_HL], SZ_W);
@@ -2627,7 +2627,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
-		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N)); 
+		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N));
 		//write to IO (C)
 		zreg_to_native(opts, Z80_C, opts->gen.scratch2);
 		call(code, opts->write_io);//T states 4
@@ -2671,7 +2671,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
-		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N)); 
+		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N));
 		//write to IO (C)
 		zreg_to_native(opts, Z80_C, opts->gen.scratch2);
 		call(code, opts->write_io);//T states 4
@@ -2726,7 +2726,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
-		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N)); 
+		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N));
 		//write to IO (C)
 		zreg_to_native(opts, Z80_C, opts->gen.scratch2);
 		call(code, opts->write_io);//T states 4
@@ -2770,7 +2770,7 @@ void translate_z80inst(z80inst * inst, z80_context * context, uint16_t address, 
 		//undocumented N flag behavior
 		//flag set on bit 7 of value written
 		bt_ir(code, 7, opts->gen.scratch1, SZ_B);
-		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N)); 
+		setcc_rdisp(code, CC_NC, opts->gen.context_reg, zf_off(ZF_N));
 		//write to IO (C)
 		zreg_to_native(opts, Z80_C, opts->gen.scratch2);
 		call(code, opts->write_io);//T states 4
@@ -2861,15 +2861,21 @@ code_info z80_make_interp_stub(z80_context * context, uint16_t address)
 {
 	z80_options *opts = context->options;
 	code_info * code = &opts->gen.code;
-	check_alloc_code(code, 32);
+	check_alloc_code(code, 64);
 	code_info stub = {code->cur, NULL};
-	//TODO: make this play well with the breakpoint code
+
+	check_cycles_int(&opts->gen, address);
+	if (context->breakpoint_flags[address / 8] & (1 << (address % 8))) {
+		zbreakpoint_patch(context, address, stub.cur);
+	}
+	add_ir(code, 1, opts->regs[Z80_R], SZ_B);
+#ifdef Z80_LOG_ADDRESS
+	log_address(&opts->gen, address, "Z80: %X @ %d\n");
+#endif
 	mov_ir(code, address, opts->gen.scratch1, SZ_W);
 	call(code, opts->read_8);
 	//opcode fetch M-cycles have one extra T-state
 	cycles(&opts->gen, 1);
-	//TODO: increment R
-	check_cycles_int(&opts->gen, address);
 	call(code, opts->gen.save_context);
 	mov_irdisp(code, address, opts->gen.context_reg, offsetof(z80_context, pc), SZ_W);
 	push_r(code, opts->gen.context_reg);
@@ -2887,7 +2893,7 @@ uint8_t * z80_get_native_address(z80_context * context, uint32_t address)
 {
 	z80_options *opts = context->options;
 	native_map_slot * native_code_map = opts->gen.native_code_map;
-	
+
 	memmap_chunk const *mem_chunk = find_map_chunk(address, &opts->gen, 0, NULL);
 	if (mem_chunk) {
 		//calculate the lowest alias for this address
@@ -2944,7 +2950,7 @@ void z80_map_native_address(z80_context * context, uint32_t address, uint8_t * n
 	} else {
 		address &= opts->gen.address_mask;
 	}
-	
+
 	native_map_slot *map = opts->gen.native_code_map + address / NATIVE_CHUNK_SIZE;
 	if (!map->base) {
 		map->base = native_address;
@@ -2960,7 +2966,7 @@ void z80_map_native_address(z80_context * context, uint32_t address, uint8_t * n
 			map->offsets = malloc(sizeof(int32_t) * NATIVE_CHUNK_SIZE);
 			memset(map->offsets, 0xFF, sizeof(int32_t) * NATIVE_CHUNK_SIZE);
 		}
-	
+
 		if (map->offsets[address % NATIVE_CHUNK_SIZE] == INVALID_OFFSET) {
 			//TODO: better handling of potentially overlapping instructions
 			map->offsets[address % NATIVE_CHUNK_SIZE] = EXTENSION_WORD;
@@ -2971,7 +2977,7 @@ void z80_map_native_address(z80_context * context, uint32_t address, uint8_t * n
 #define INVALID_INSTRUCTION_START 0xFEEDFEED
 
 uint32_t z80_get_instruction_start(z80_context *context, uint32_t address)
-{	
+{
 	z80_options *opts = context->options;
 	native_map_slot * native_code_map = opts->gen.native_code_map;
 	memmap_chunk const *mem_chunk = find_map_chunk(address, &opts->gen, 0, NULL);
@@ -2979,7 +2985,7 @@ uint32_t z80_get_instruction_start(z80_context *context, uint32_t address)
 		//calculate the lowest alias for this address
 		address = mem_chunk->start + ((address - mem_chunk->start) & mem_chunk->mask);
 	}
-	
+
 	uint32_t chunk = address / NATIVE_CHUNK_SIZE;
 	if (!native_code_map[chunk].base) {
 		return INVALID_INSTRUCTION_START;
@@ -3201,9 +3207,13 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	options->gen.max_address = 0x10000;
 	options->gen.bus_cycles = 3;
 	options->gen.clock_divider = clock_divider;
+	options->gen.watchpoint_range_off = offsetof(z80_context, watchpoint_min);
 	options->gen.mem_ptr_off = offsetof(z80_context, mem_pointers);
 	options->gen.ram_flags_off = offsetof(z80_context, ram_code_flags);
 	options->gen.ram_flags_shift = 7;
+	options->io_memmap = io_chunks;
+	options->io_memmap_chunks = num_io_chunks;
+	options->io_address_mask = io_address_mask;
 
 	options->flags = 0;
 #ifdef X86_64
@@ -3237,7 +3247,7 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	options->regs[Z80_H] = BH;
 	options->regs[Z80_L] = RBX;
 	options->regs[Z80_HL] = RBX;
-	
+
 	options->regs[Z80_SP] = RDI;
 
 	options->gen.scratch1 = RCX;
@@ -3342,7 +3352,7 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	call_noalign(code, options->gen.handle_cycle_limit);
 	uint32_t call_adjust_size = code->cur - options->gen.handle_cycle_limit;
 	code->cur = options->gen.handle_cycle_limit;
-	
+
 	neg_r(code, options->gen.cycles, SZ_D);
 	add_rdispr(code, options->gen.context_reg, offsetof(z80_context, target_cycle), options->gen.cycles, SZ_D);
 	cmp_rdispr(code, options->gen.context_reg, offsetof(z80_context, sync_cycle), options->gen.cycles, SZ_D);
@@ -3363,7 +3373,7 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	restore_callee_save_regs(code);
 	//return to caller of z80_run
 	retn(code);
-	
+
 	*no_sync = code->cur - (no_sync + 1);
 	neg_r(code, options->gen.cycles, SZ_D);
 	add_rdispr(code, options->gen.context_reg, offsetof(z80_context, target_cycle), options->gen.cycles, SZ_D);
@@ -3372,15 +3382,306 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 
 	options->gen.handle_code_write = (code_ptr)z80_handle_code_write;
 
-	options->read_8 = gen_mem_fun(&options->gen, chunks, num_chunks, READ_8, &options->read_8_noinc);
-	options->write_8 = gen_mem_fun(&options->gen, chunks, num_chunks, WRITE_8, &options->write_8_noinc);
+	z80_clock_divider_updated(options);
 
+	options->retrans_stub = code->cur;
+	tmp_stack_off = code->stack_off;
+	//calculate size of patch
+	mov_ir(code, 0x7FFF, options->gen.scratch1, SZ_D);
+	code->stack_off += sizeof(void *);
+	if (code->stack_off & 0xF) {
+		sub_ir(code, 16 - (code->stack_off & 0xF), RSP, SZ_PTR);
+	}
+	call_noalign(code, options->retrans_stub);
+	uint32_t patch_size = code->cur - options->retrans_stub;
+	code->cur = options->retrans_stub;
+	code->stack_off = tmp_stack_off;
+
+	//pop return address
+	pop_r(code, options->gen.scratch2);
+	add_ir(code, 16-sizeof(void*), RSP, SZ_PTR);
+	code->stack_off = tmp_stack_off;
+	call(code, options->gen.save_context);
+	//adjust pointer before move and call instructions that got us here
+	sub_ir(code, patch_size, options->gen.scratch2, SZ_PTR);
+	push_r(code, options->gen.context_reg);
+	call_args(code, (code_ptr)z80_retranslate_inst, 3, options->gen.scratch1, options->gen.context_reg, options->gen.scratch2);
+	pop_r(code, options->gen.context_reg);
+	mov_rr(code, RAX, options->gen.scratch1, SZ_PTR);
+	call(code, options->gen.load_context);
+	jmp_r(code, options->gen.scratch1);
+
+	options->run = (z80_ctx_fun)code->cur;
+	tmp_stack_off = code->stack_off;
+	save_callee_save_regs(code);
+#ifdef X86_64
+	mov_rr(code, FIRST_ARG_REG, options->gen.context_reg, SZ_PTR);
+#else
+	mov_rdispr(code, RSP, 5 * sizeof(int32_t), options->gen.context_reg, SZ_PTR);
+#endif
+	call(code, options->load_context_scratch);
+	cmp_irdisp(code, 0, options->gen.context_reg, offsetof(z80_context, extra_pc), SZ_PTR);
+	code_ptr no_extra = code->cur+1;
+	jcc(code, CC_Z, no_extra);
+	sub_ir(code, 16-sizeof(void *), RSP, SZ_PTR);
+	push_rdisp(code, options->gen.context_reg, offsetof(z80_context, extra_pc));
+	mov_irdisp(code, 0, options->gen.context_reg, offsetof(z80_context, extra_pc), SZ_PTR);
+	*no_extra = code->cur - (no_extra + 1);
+	jmp_rind(code, options->gen.context_reg);
+	code->stack_off = tmp_stack_off;
+}
+
+z80_context *init_z80_context(z80_options * options)
+{
+	size_t ctx_size = sizeof(z80_context) + ram_size(&options->gen) / (1 << options->gen.ram_flags_shift) / 8;
+	z80_context *context = calloc(1, ctx_size);
+	context->options = options;
+	context->int_cycle = CYCLE_NEVER;
+	context->int_pulse_start = CYCLE_NEVER;
+	context->int_pulse_end = CYCLE_NEVER;
+	context->nmi_start = CYCLE_NEVER;
+	context->sp = 0xFFFF;
+
+	return context;
+}
+
+static void check_nmi(z80_context *context)
+{
+	if (context->nmi_start < context->int_cycle) {
+		context->int_cycle = context->nmi_start;
+		context->int_is_nmi = 1;
+	}
+}
+
+void z80_run(z80_context * context, uint32_t target_cycle)
+{
+	if (context->reset || context->busack) {
+		context->current_cycle = target_cycle;
+	} else {
+		if (context->current_cycle < target_cycle) {
+			//busreq is sampled at the end of an m-cycle
+			//we can approximate that by running for a single m-cycle after a bus request
+			context->sync_cycle = context->busreq ? context->current_cycle + 3*context->options->gen.clock_divider : target_cycle;
+			if (!context->native_pc) {
+				context->native_pc = z80_get_native_address_trans(context, context->pc);
+			}
+			while (context->current_cycle < context->sync_cycle)
+			{
+				if (context->next_int_pulse && (context->int_pulse_end < context->current_cycle || context->int_pulse_end == CYCLE_NEVER)) {
+					context->next_int_pulse(context);
+				}
+				if (context->iff1) {
+					context->int_cycle = context->int_pulse_start < context->int_enable_cycle ? context->int_enable_cycle : context->int_pulse_start;
+					context->int_is_nmi = 0;
+				} else {
+					context->int_cycle = CYCLE_NEVER;
+				}
+				check_nmi(context);
+
+				context->target_cycle = context->sync_cycle < context->int_cycle ? context->sync_cycle : context->int_cycle;
+				dprintf("Running Z80 from cycle %d to cycle %d. Int cycle: %d (%d - %d)\n", context->current_cycle, context->sync_cycle, context->int_cycle, context->int_pulse_start, context->int_pulse_end);
+				context->options->run(context);
+				dprintf("Z80 ran to cycle %d\n", context->current_cycle);
+			}
+			if (context->busreq) {
+				context->busack = 1;
+				context->current_cycle = target_cycle;
+			}
+		}
+	}
+}
+
+void z80_options_free(z80_options *opts)
+{
+	for (uint32_t address = 0; address < opts->gen.address_mask; address += NATIVE_CHUNK_SIZE)
+	{
+		uint32_t chunk = address / NATIVE_CHUNK_SIZE;
+		if (opts->gen.native_code_map[chunk].base) {
+			free(opts->gen.native_code_map[chunk].offsets);
+		}
+	}
+	free(opts->gen.native_code_map);
+	uint32_t ram_inst_slots = ram_size(&opts->gen) / 1024;
+	for (uint32_t i = 0; i < ram_inst_slots; i++)
+	{
+		free(opts->gen.ram_inst_sizes[i]);
+	}
+	free(opts->gen.ram_inst_sizes);
+	free(opts);
+}
+
+void z80_assert_reset(z80_context * context, uint32_t cycle)
+{
+	z80_run(context, cycle);
+	context->reset = 1;
+}
+
+void z80_clear_reset(z80_context * context, uint32_t cycle)
+{
+	z80_run(context, cycle);
+	if (context->reset) {
+		//TODO: Handle case where reset is not asserted long enough
+		context->im = 0;
+		context->iff1 = context->iff2 = 0;
+		context->native_pc = NULL;
+		context->extra_pc = NULL;
+		context->pc = 0;
+		context->reset = 0;
+		context->sp = 0xFFFF;
+		if (context->busreq) {
+			//TODO: Figure out appropriate delay
+			context->busack = 1;
+		}
+	}
+}
+
+void z80_assert_busreq(z80_context * context, uint32_t cycle)
+{
+	z80_run(context, cycle);
+	context->busreq = 1;
+	//this is an imperfect aproximation since most M-cycles take less tstates than the max
+	//and a short 3-tstate m-cycle can take an unbounded number due to wait states
+	if (context->current_cycle - cycle > MAX_MCYCLE_LENGTH * context->options->gen.clock_divider) {
+		context->busack = 1;
+	}
+}
+
+void z80_clear_busreq(z80_context * context, uint32_t cycle)
+{
+	z80_run(context, cycle);
+	context->busreq = 0;
+	context->busack = 0;
+	//there appears to be at least a 1 Z80 cycle delay between busreq
+	//being released and resumption of execution
+	context->current_cycle += context->options->gen.clock_divider;
+}
+
+uint8_t z80_get_busack(z80_context * context, uint32_t cycle)
+{
+	z80_run(context, cycle);
+	return context->busack;
+}
+
+void z80_assert_nmi(z80_context *context, uint32_t cycle)
+{
+	context->nmi_start = cycle;
+	check_nmi(context);
+}
+
+void z80_adjust_cycles(z80_context * context, uint32_t deduction)
+{
+	if (context->current_cycle < deduction) {
+		fprintf(stderr, "WARNING: Deduction of %u cycles when Z80 cycle counter is only %u\n", deduction, context->current_cycle);
+		context->current_cycle = 0;
+	} else {
+		context->current_cycle -= deduction;
+	}
+	if (context->int_enable_cycle != CYCLE_NEVER) {
+		if (context->int_enable_cycle < deduction) {
+			context->int_enable_cycle = 0;
+		} else {
+			context->int_enable_cycle -= deduction;
+		}
+	}
+	if (context->int_pulse_start != CYCLE_NEVER) {
+		if (context->int_pulse_end < deduction) {
+			context->int_pulse_start = context->int_pulse_end = CYCLE_NEVER;
+		} else {
+			if (context->int_pulse_end != CYCLE_NEVER) {
+				context->int_pulse_end -= deduction;
+			}
+			if (context->int_pulse_start < deduction) {
+				context->int_pulse_start = 0;
+			} else {
+				context->int_pulse_start -= deduction;
+			}
+		}
+	}
+	if (context->nmi_start != CYCLE_NEVER) {
+		if (context->nmi_start < deduction) {
+			context->nmi_start = 0;
+		} else {
+			context->nmi_start -= deduction;
+		}
+	}
+}
+
+uint32_t zbreakpoint_patch(z80_context * context, uint16_t address, code_ptr dst)
+{
+	code_info code = {
+		dst,
+		dst+32,
+#ifdef X86_64
+		8
+#else
+		0
+#endif
+	};
+	mov_ir(&code, address, context->options->gen.scratch1, SZ_W);
+	call(&code, context->bp_stub);
+	return code.cur-dst;
+}
+
+void zcreate_stub(z80_context * context)
+{
+	//FIXME: Stack offset stuff is probably broken on 32-bit
+	z80_options * opts = context->options;
+	code_info *code = &opts->gen.code;
+	uint32_t start_stack_off = code->stack_off;
+	check_code_prologue(code);
+	context->bp_stub = code->cur;
+
+	//Calculate length of prologue
+	check_cycles_int(&opts->gen, 0);
+	int check_int_size = code->cur-context->bp_stub;
+	code->cur = context->bp_stub;
+
+	//Calculate length of patch
+	int patch_size = zbreakpoint_patch(context, 0, code->cur);
+
+#ifdef X86_64
+	code->stack_off = 8;
+#endif
+	//Save context and call breakpoint handler
+	call(code, opts->gen.save_context);
+	push_r(code, opts->gen.scratch1);
+	call_args_abi(code, context->bp_handler, 2, opts->gen.context_reg, opts->gen.scratch1);
+	mov_rr(code, RAX, opts->gen.context_reg, SZ_PTR);
+		//Restore context
+	call(code, opts->gen.load_context);
+	pop_r(code, opts->gen.scratch1);
+		//do prologue stuff
+	cmp_ir(code, 1, opts->gen.cycles, SZ_D);
+	uint8_t * jmp_off = code->cur+1;
+	jcc(code, CC_NS, code->cur + 7);
+	pop_r(code, opts->gen.scratch1);
+	add_ir(code, check_int_size - patch_size, opts->gen.scratch1, SZ_PTR);
+#ifdef X86_64
+	sub_ir(code, 8, RSP, SZ_PTR);
+#endif
+	push_r(code, opts->gen.scratch1);
+	jmp(code, opts->gen.handle_cycle_limit_int);
+	*jmp_off = code->cur - (jmp_off+1);
+		//jump back to body of translated instruction
+	pop_r(code, opts->gen.scratch1);
+	add_ir(code, check_int_size - patch_size, opts->gen.scratch1, SZ_PTR);
+	jmp_r(code, opts->gen.scratch1);
+	code->stack_off = start_stack_off;
+}
+
+void z80_clock_divider_updated(z80_options *options)
+{
+	//TODO: make this not leak memory whenever the clock changes
+	options->read_8 = gen_mem_fun(&options->gen, options->gen.memmap, options->gen.memmap_chunks, READ_8, &options->read_8_noinc, 0);
+	options->write_8 = gen_mem_fun(&options->gen, options->gen.memmap, options->gen.memmap_chunks, WRITE_8, &options->write_8_noinc, 0);
+	
+	code_info *code = &options->gen.code;
 	code_ptr skip_int = code->cur;
 	//calculate adjust size
 	add_ir(code, 16-sizeof(void *), RSP, SZ_PTR);
 	uint32_t adjust_size = code->cur - skip_int;
 	code->cur = skip_int;
-	
+
 	cmp_rdispr(code, options->gen.context_reg, offsetof(z80_context, sync_cycle), options->gen.cycles, SZ_D);
 	code_ptr skip_sync = code->cur + 1;
 	jcc(code, CC_B, skip_sync);
@@ -3390,14 +3691,14 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	mov_rrdisp(code, options->gen.scratch1, options->gen.context_reg, offsetof(z80_context, pc), SZ_D);
 	options->do_sync = code->cur;
 	call(code, options->gen.save_context);
-	tmp_stack_off = code->stack_off;
+	uint32_t tmp_stack_off = code->stack_off;
 	//pop return address off the stack and save for resume later
 	//pop_rind(code, options->gen.context_reg);
 	pop_r(code, RAX);
 	add_ir(code, adjust_size, RAX, SZ_PTR);
 	add_ir(code, 16-sizeof(void *), RSP, SZ_PTR);
 	mov_rrind(code, RAX, options->gen.context_reg, SZ_PTR);
-	
+
 	//restore callee saved registers
 	restore_callee_save_regs(code);
 	//return to caller of z80_run
@@ -3407,7 +3708,7 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	add_rdispr(code, options->gen.context_reg, offsetof(z80_context, target_cycle), options->gen.cycles, SZ_D);
 	retn(code);
 	code->stack_off = tmp_stack_off;
-
+	
 	options->gen.handle_cycle_limit_int = code->cur;
 	neg_r(code, options->gen.cycles, SZ_D);
 	add_rdispr(code, options->gen.context_reg, offsetof(z80_context, target_cycle), options->gen.cycles, SZ_D);
@@ -3505,17 +3806,17 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	//return to caller of z80_run to sync
 	retn(code);
 	code->stack_off = tmp_stack_off;
-
+	
 	//HACK
 	options->gen.address_size = SZ_D;
-	options->gen.address_mask = io_address_mask;
+	options->gen.address_mask = options->io_address_mask;
 	options->gen.bus_cycles = 4;
-	options->read_io = gen_mem_fun(&options->gen, io_chunks, num_io_chunks, READ_8, NULL);
-	options->write_io = gen_mem_fun(&options->gen, io_chunks, num_io_chunks, WRITE_8, NULL);
+	options->read_io = gen_mem_fun(&options->gen, options->io_memmap, options->io_memmap_chunks, READ_8, NULL, 0);
+	options->write_io = gen_mem_fun(&options->gen, options->io_memmap, options->io_memmap_chunks, WRITE_8, NULL, 0);
 	options->gen.address_size = SZ_W;
 	options->gen.address_mask = 0xFFFF;
 	options->gen.bus_cycles = 3;
-
+	
 	options->read_16 = code->cur;
 	cycles(&options->gen, 3);
 	check_cycles(&options->gen);
@@ -3572,281 +3873,6 @@ void init_z80_opts(z80_options * options, memmap_chunk const * chunks, uint32_t 
 	//TODO: Check if we can get away with TCO here
 	call(code, options->write_8_noinc);
 	retn(code);
-
-	options->retrans_stub = code->cur;
-	tmp_stack_off = code->stack_off;
-	//calculate size of patch
-	mov_ir(code, 0x7FFF, options->gen.scratch1, SZ_D);
-	code->stack_off += sizeof(void *);
-	if (code->stack_off & 0xF) {
-		sub_ir(code, 16 - (code->stack_off & 0xF), RSP, SZ_PTR);
-	}
-	call_noalign(code, options->retrans_stub);
-	uint32_t patch_size = code->cur - options->retrans_stub;
-	code->cur = options->retrans_stub;
-	code->stack_off = tmp_stack_off;
-	
-	//pop return address
-	pop_r(code, options->gen.scratch2);
-	add_ir(code, 16-sizeof(void*), RSP, SZ_PTR);
-	code->stack_off = tmp_stack_off;
-	call(code, options->gen.save_context);
-	//adjust pointer before move and call instructions that got us here
-	sub_ir(code, patch_size, options->gen.scratch2, SZ_PTR);
-	push_r(code, options->gen.context_reg);
-	call_args(code, (code_ptr)z80_retranslate_inst, 3, options->gen.scratch1, options->gen.context_reg, options->gen.scratch2);
-	pop_r(code, options->gen.context_reg);
-	mov_rr(code, RAX, options->gen.scratch1, SZ_PTR);
-	call(code, options->gen.load_context);
-	jmp_r(code, options->gen.scratch1);
-
-	options->run = (z80_ctx_fun)code->cur;
-	tmp_stack_off = code->stack_off;
-	save_callee_save_regs(code);
-#ifdef X86_64
-	mov_rr(code, FIRST_ARG_REG, options->gen.context_reg, SZ_PTR);
-#else
-	mov_rdispr(code, RSP, 5 * sizeof(int32_t), options->gen.context_reg, SZ_PTR);
-#endif
-	call(code, options->load_context_scratch);
-	cmp_irdisp(code, 0, options->gen.context_reg, offsetof(z80_context, extra_pc), SZ_PTR);
-	code_ptr no_extra = code->cur+1;
-	jcc(code, CC_Z, no_extra);
-	sub_ir(code, 16-sizeof(void *), RSP, SZ_PTR);	
-	push_rdisp(code, options->gen.context_reg, offsetof(z80_context, extra_pc));
-	mov_irdisp(code, 0, options->gen.context_reg, offsetof(z80_context, extra_pc), SZ_PTR);
-	*no_extra = code->cur - (no_extra + 1);
-	jmp_rind(code, options->gen.context_reg);
-	code->stack_off = tmp_stack_off;
-}
-
-z80_context *init_z80_context(z80_options * options)
-{
-	size_t ctx_size = sizeof(z80_context) + ram_size(&options->gen) / (1 << options->gen.ram_flags_shift) / 8;
-	z80_context *context = calloc(1, ctx_size);
-	context->options = options;
-	context->int_cycle = CYCLE_NEVER;
-	context->int_pulse_start = CYCLE_NEVER;
-	context->int_pulse_end = CYCLE_NEVER;
-	context->nmi_start = CYCLE_NEVER;
-	
-	return context;
-}
-
-static void check_nmi(z80_context *context)
-{
-	if (context->nmi_start < context->int_cycle) {
-		context->int_cycle = context->nmi_start;
-		context->int_is_nmi = 1;
-	}
-}
-
-void z80_run(z80_context * context, uint32_t target_cycle)
-{
-	if (context->reset || context->busack) {
-		context->current_cycle = target_cycle;
-	} else {
-		if (context->current_cycle < target_cycle) {
-			//busreq is sampled at the end of an m-cycle
-			//we can approximate that by running for a single m-cycle after a bus request
-			context->sync_cycle = context->busreq ? context->current_cycle + 3*context->options->gen.clock_divider : target_cycle;
-			if (!context->native_pc) {
-				context->native_pc = z80_get_native_address_trans(context, context->pc);
-			}
-			while (context->current_cycle < context->sync_cycle)
-			{
-				if (context->next_int_pulse && (context->int_pulse_end < context->current_cycle || context->int_pulse_end == CYCLE_NEVER)) {
-					context->next_int_pulse(context);
-				}
-				if (context->iff1) {
-					context->int_cycle = context->int_pulse_start < context->int_enable_cycle ? context->int_enable_cycle : context->int_pulse_start;
-					context->int_is_nmi = 0;
-				} else {
-					context->int_cycle = CYCLE_NEVER;
-				}
-				check_nmi(context);
-				
-				context->target_cycle = context->sync_cycle < context->int_cycle ? context->sync_cycle : context->int_cycle;
-				dprintf("Running Z80 from cycle %d to cycle %d. Int cycle: %d (%d - %d)\n", context->current_cycle, context->sync_cycle, context->int_cycle, context->int_pulse_start, context->int_pulse_end);
-				context->options->run(context);
-				dprintf("Z80 ran to cycle %d\n", context->current_cycle);
-			}
-			if (context->busreq) {
-				context->busack = 1;
-				context->current_cycle = target_cycle;
-			}
-		}
-	}
-}
-
-void z80_options_free(z80_options *opts)
-{
-	for (uint32_t address = 0; address < opts->gen.address_mask; address += NATIVE_CHUNK_SIZE)
-	{
-		uint32_t chunk = address / NATIVE_CHUNK_SIZE;
-		if (opts->gen.native_code_map[chunk].base) {
-			free(opts->gen.native_code_map[chunk].offsets);
-		}
-	}
-	free(opts->gen.native_code_map);
-	uint32_t ram_inst_slots = ram_size(&opts->gen) / 1024;
-	for (uint32_t i = 0; i < ram_inst_slots; i++)
-	{
-		free(opts->gen.ram_inst_sizes[i]);
-	}
-	free(opts->gen.ram_inst_sizes);
-	free(opts);
-}
-
-void z80_assert_reset(z80_context * context, uint32_t cycle)
-{
-	z80_run(context, cycle);
-	context->reset = 1;
-}
-
-void z80_clear_reset(z80_context * context, uint32_t cycle)
-{
-	z80_run(context, cycle);
-	if (context->reset) {
-		//TODO: Handle case where reset is not asserted long enough
-		context->im = 0;
-		context->iff1 = context->iff2 = 0;
-		context->native_pc = NULL;
-		context->extra_pc = NULL;
-		context->pc = 0;
-		context->reset = 0;
-		if (context->busreq) {
-			//TODO: Figure out appropriate delay
-			context->busack = 1;
-		}
-	}
-}
-
-void z80_assert_busreq(z80_context * context, uint32_t cycle)
-{
-	z80_run(context, cycle);
-	context->busreq = 1;
-	//this is an imperfect aproximation since most M-cycles take less tstates than the max
-	//and a short 3-tstate m-cycle can take an unbounded number due to wait states
-	if (context->current_cycle - cycle > MAX_MCYCLE_LENGTH * context->options->gen.clock_divider) {
-		context->busack = 1;
-	}
-}
-
-void z80_clear_busreq(z80_context * context, uint32_t cycle)
-{
-	z80_run(context, cycle);
-	context->busreq = 0;
-	context->busack = 0;
-	//there appears to be at least a 1 Z80 cycle delay between busreq
-	//being released and resumption of execution
-	context->current_cycle += context->options->gen.clock_divider;
-}
-
-uint8_t z80_get_busack(z80_context * context, uint32_t cycle)
-{
-	z80_run(context, cycle);
-	return context->busack;
-}
-
-void z80_assert_nmi(z80_context *context, uint32_t cycle)
-{
-	context->nmi_start = cycle;
-	check_nmi(context);
-}
-
-void z80_adjust_cycles(z80_context * context, uint32_t deduction)
-{
-	if (context->current_cycle < deduction) {
-		fprintf(stderr, "WARNING: Deduction of %u cycles when Z80 cycle counter is only %u\n", deduction, context->current_cycle);
-		context->current_cycle = 0;
-	} else {
-		context->current_cycle -= deduction;
-	}
-	if (context->int_enable_cycle != CYCLE_NEVER) {
-		if (context->int_enable_cycle < deduction) {
-			context->int_enable_cycle = 0;
-		} else {
-			context->int_enable_cycle -= deduction;
-		}
-	}
-	if (context->int_pulse_start != CYCLE_NEVER) {
-		if (context->int_pulse_end < deduction) {
-			context->int_pulse_start = context->int_pulse_end = CYCLE_NEVER;
-		} else {
-			if (context->int_pulse_end != CYCLE_NEVER) {
-				context->int_pulse_end -= deduction;
-			}
-			if (context->int_pulse_start < deduction) {
-				context->int_pulse_start = 0;
-			} else {
-				context->int_pulse_start -= deduction;
-			}
-		}
-	}
-}
-
-uint32_t zbreakpoint_patch(z80_context * context, uint16_t address, code_ptr dst)
-{
-	code_info code = {
-		dst, 
-		dst+32,
-#ifdef X86_64
-		8
-#else
-		0
-#endif
-	};
-	mov_ir(&code, address, context->options->gen.scratch1, SZ_W);
-	call(&code, context->bp_stub);
-	return code.cur-dst;
-}
-
-void zcreate_stub(z80_context * context)
-{
-	//FIXME: Stack offset stuff is probably broken on 32-bit
-	z80_options * opts = context->options;
-	code_info *code = &opts->gen.code;
-	uint32_t start_stack_off = code->stack_off;
-	check_code_prologue(code);
-	context->bp_stub = code->cur;
-
-	//Calculate length of prologue
-	check_cycles_int(&opts->gen, 0);
-	int check_int_size = code->cur-context->bp_stub;
-	code->cur = context->bp_stub;
-
-	//Calculate length of patch
-	int patch_size = zbreakpoint_patch(context, 0, code->cur);
-
-#ifdef X86_64
-	code->stack_off = 8;
-#endif
-	//Save context and call breakpoint handler
-	call(code, opts->gen.save_context);
-	push_r(code, opts->gen.scratch1);
-	call_args_abi(code, context->bp_handler, 2, opts->gen.context_reg, opts->gen.scratch1);
-	mov_rr(code, RAX, opts->gen.context_reg, SZ_PTR);
-		//Restore context
-	call(code, opts->gen.load_context);
-	pop_r(code, opts->gen.scratch1);
-		//do prologue stuff
-	cmp_ir(code, 1, opts->gen.cycles, SZ_D);
-	uint8_t * jmp_off = code->cur+1;
-	jcc(code, CC_NS, code->cur + 7);
-	pop_r(code, opts->gen.scratch1);
-	add_ir(code, check_int_size - patch_size, opts->gen.scratch1, SZ_PTR);
-#ifdef X86_64
-	sub_ir(code, 8, RSP, SZ_PTR);
-#endif
-	push_r(code, opts->gen.scratch1);
-	jmp(code, opts->gen.handle_cycle_limit_int);
-	*jmp_off = code->cur - (jmp_off+1);
-		//jump back to body of translated instruction
-	pop_r(code, opts->gen.scratch1);
-	add_ir(code, check_int_size - patch_size, opts->gen.scratch1, SZ_PTR);
-	jmp_r(code, opts->gen.scratch1);
-	code->stack_off = start_stack_off;
 }
 
 void zinsert_breakpoint(z80_context * context, uint16_t address, uint8_t * bp_handler)
@@ -3864,7 +3890,6 @@ void zinsert_breakpoint(z80_context * context, uint16_t address, uint8_t * bp_ha
 		}
 	}
 }
-
 void zremove_breakpoint(z80_context * context, uint16_t address)
 {
 	context->breakpoint_flags[address / 8] &= ~(1 << (address % 8));
@@ -3876,6 +3901,100 @@ void zremove_breakpoint(z80_context * context, uint16_t address)
 		opts->gen.code.last = native + 128;
 		check_cycles_int(&opts->gen, address);
 		opts->gen.code = tmp_code;
+	}
+}
+
+static void *z80_watchpoint_check(uint32_t address, void *vcontext, uint8_t value)
+{
+	z80_context *context = vcontext;
+	z80_watchpoint *watch = NULL;
+	address &= 0xFFFF;
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (address >= context->watchpoints[i].start && address <= context->watchpoints[i].end) {
+			watch = context->watchpoints + i;
+			break;
+		}
+	}
+	if (!watch) {
+		return vcontext;
+	}
+	if (watch->check_change) {
+		uint8_t old = read_byte(address, (void **)context->mem_pointers, &context->options->gen, context);
+		if (old == value) {
+			return vcontext;
+		}
+		context->wp_old_value = old;
+	} else {
+		context->wp_old_value = value;
+	}
+	context->wp_hit_address = address;
+	context->wp_hit_value = value;
+	context->wp_hit = 1;
+	context->target_cycle = context->sync_cycle = context->current_cycle;
+	system_header *system = context->system;
+	return vcontext;
+}
+
+static void z80_enable_watchpoints(z80_context *context)
+{
+	if (context->options->gen.check_watchpoints_8) {
+		//already enabled
+		return;
+	}
+	context->watchpoint_min = 0xFFFF;
+	context->watchpoint_max = 0;
+	context->options->gen.check_watchpoints_8 = z80_watchpoint_check;
+	//re-generate write handlers with watchpoints enabled
+	code_ptr new_write8 = gen_mem_fun(&context->options->gen, context->options->gen.memmap, context->options->gen.memmap_chunks, WRITE_8, NULL, 0);
+
+	//patch old write handlers to point to the new ones
+	code_info code = {
+		.cur = context->options->write_8,
+		.last = context->options->write_8 + 256
+	};
+	jmp(&code, new_write8);
+	context->options->write_8 = new_write8;
+}
+
+void z80_add_watchpoint(z80_context *context, uint16_t address, uint16_t size)
+{
+	uint32_t end = address + size - 1;
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (context->watchpoints[i].start == address && context->watchpoints[i].end == end) {
+			return;
+		}
+	}
+	z80_enable_watchpoints(context);
+	if (context->wp_storage == context->num_watchpoints) {
+		context->wp_storage = context->wp_storage ? context->wp_storage * 2 : 4;
+		context->watchpoints = realloc(context->watchpoints, context->wp_storage * sizeof(z80_watchpoint));
+	}
+	const memmap_chunk *chunk = find_map_chunk(address, &context->options->gen, 0, NULL);
+	context->watchpoints[context->num_watchpoints++] = (z80_watchpoint){
+		.start = address,
+		.end = end,
+		.check_change = chunk && (chunk->flags & MMAP_READ)
+	};
+	if (context->watchpoint_min > address) {
+		context->watchpoint_min = address;
+	}
+	if (context->watchpoint_max < end) {
+		context->watchpoint_max = end;
+	}
+}
+
+void z80_remove_watchpoint(z80_context *context, uint32_t address, uint32_t size)
+{
+	uint32_t end = address + size - 1;
+	for (uint32_t i = 0; i < context->num_watchpoints; i++)
+	{
+		if (context->watchpoints[i].start == address && context->watchpoints[i].end == end) {
+			context->watchpoints[i] = context->watchpoints[context->num_watchpoints-1];
+			context->num_watchpoints--;
+			return;
+		}
 	}
 }
 

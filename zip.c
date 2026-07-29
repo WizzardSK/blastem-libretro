@@ -21,7 +21,11 @@ enum {
 
 zip_file *zip_open(const char *filename)
 {
+#ifdef __ANDROID__
+	FILE *f = fopen_wrapper(filename, "rb");
+#else
 	FILE *f = fopen(filename, "rb");
+#endif
 	if (!f) {
 		return NULL;
 	}
@@ -106,6 +110,7 @@ zip_file *zip_open(const char *filename)
 	z->entries = entries;
 	z->file = f;
 	z->num_entries = cur_entry - entries;
+	free(buf);
 	return z;
 	
 fail_entries:
@@ -121,7 +126,7 @@ fail:
 	return NULL;
 }
 
-uint8_t *zip_read(zip_file *f, uint32_t index, size_t *out_size)
+uint8_t *zip_read(zip_file *f, uint32_t index, size_t *out_size, size_t aligned)
 {
 	
 	fseek(f->file, f->entries[index].local_header_off + 26, SEEK_SET);
@@ -138,7 +143,7 @@ uint8_t *zip_read(zip_file *f, uint32_t index, size_t *out_size)
 		int_size = f->entries[index].size;
 	}
 	
-	uint8_t *buf = malloc(*out_size);
+	uint8_t *buf = aligned ? aligned_calloc(1, *out_size, aligned) : malloc(*out_size);
 	if (*out_size > f->entries[index].size) {
 		*out_size = f->entries[index].size;
 	}

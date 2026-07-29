@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <signal.h>
-#include "util.h"
+#include "paths.h"
 #include "terminal.h"
 
 pid_t child;
@@ -26,6 +26,7 @@ void force_no_terminal()
 
 void init_terminal()
 {
+#if !defined(IS_LIB) && !defined(__ANDROID__)
 	if (!init_done) {
 		if (!(isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))) {
 #ifndef __APPLE__
@@ -39,7 +40,7 @@ void init_terminal()
 			mkfifo(INPUT_PATH, 0666);
 			mkfifo(OUTPUT_PATH, 0666);
 
-			//close existing file descriptors
+			//close existing file descriptorsbundled_file_path
 			close(STDIN_FILENO);
 			close(STDOUT_FILENO);
 			close(STDERR_FILENO);
@@ -50,11 +51,13 @@ void init_terminal()
 				warning("Failed to fork for terminal spawn");
 			} else if (!child) {
 				//child process, exec our terminal emulator
+				char *termhelper = bundled_file_path("termhelper");
 #ifdef __APPLE__
-				execlp("open", "open", "./termhelper", NULL);
+				execlp("open", "open", termhelper, NULL);
 #else
-				execlp(term, term, "-title", "BlastEm Debugger", "-e", "./termhelper", NULL);
+				execlp(term, term, "-title", "BlastEm Debugger", "-e", termhelper, NULL);
 #endif
+				free(termhelper);
 			} else {
 				//connect to the FIFOs, these will block so order is important
 				open(INPUT_PATH, O_RDONLY);
@@ -68,4 +71,5 @@ void init_terminal()
 
 		init_done = 1;
 	}
+#endif
 }

@@ -6,6 +6,7 @@
 #include "util.h"
 #include "config.h"
 #include "blastem.h"
+#include "wave.h"
 
 static uint8_t output_channels;
 static uint32_t buffer_samples, sample_rate;
@@ -17,6 +18,33 @@ static uint8_t num_inactive_audio_sources;
 
 static float overall_gain_mult, *mix_buf;
 static int sample_size;
+
+static FILE *wav_file;
+void render_end_audio(void)
+{
+	render_lock_audio();
+		if (wav_file) {
+			wave_finalize(wav_file);
+			wav_file = NULL;
+		}
+	render_unlock_audio();
+}
+
+void render_save_audio(char *path)
+{
+	render_end_audio();
+	FILE *f = fopen(path, "wb");
+	if (f) {
+		wave_init(f, sample_rate, 16, 2);
+		render_lock_audio();
+			wav_file = f;
+		render_unlock_audio();
+		printf("Saving audio to %s\n", path);
+	} else {
+		warning("Failed to open %s for writing\n", path);
+	}
+	free(path);
+}
 
 typedef void (*conv_func)(float *samples, void *vstream, int sample_count);
 
@@ -41,11 +69,17 @@ static void convert_s16(float *samples, void *vstream, int sample_count)
 		}
 		*stream = out_sample;
 	}
+	if (wav_file) {
+		fwrite(vstream, sizeof(int16_t), sample_count, wav_file);
+	}
 }
 
+static int16_t *wave_buffer;
+static int wave_buffer_samples;
 static void clamp_f32(float *samples, void *vstream, int sample_count)
 {
-	for (; sample_count > 0; sample_count--, samples++)
+	float *start = samples;
+	for (int cur_count = sample_count; cur_count > 0; cur_count--, samples++)
 	{
 		float sample = *samples;
 		if (sample > 1.0f) {
@@ -54,6 +88,16 @@ static void clamp_f32(float *samples, void *vstream, int sample_count)
 			sample = -1.0f;
 		}
 		*samples = sample;
+	}
+	if (wav_file) {
+		if (!wave_buffer) {
+			wave_buffer = calloc(sample_count, sizeof(int16_t));
+			wave_buffer_samples = sample_count;
+		} else if (sample_count < wave_buffer_samples) {
+			wave_buffer = realloc(wave_buffer, sizeof(int16_t) * sample_count);
+			wave_buffer_samples = sample_count;
+		}
+		convert_s16(start, wave_buffer, sample_count);
 	}
 }
 
@@ -135,11 +179,45 @@ uint8_t all_sources_ready(void)
 	return num_populated == num_audio_sources;
 }
 
+uint8_t audio_deadlock_hack(void)
+{
+	uint32_t min_buffer_pos = 0xFFFFFFFFU;
+	for (uint8_t i = 0; i < num_audio_sources; i++)
+	{
+		if (audio_sources[i]->front_populated) {
+			uint32_t buffer_pos = audio_sources[i]->buffer_pos;
+			if (audio_sources[i]->num_channels == 1) {
+				buffer_pos *= 2;
+			}
+			if (buffer_pos < min_buffer_pos) {
+				min_buffer_pos = buffer_pos;
+			}
+		}
+	}
+	uint8_t do_signal = 0;
+	for (uint8_t i = 0; i < num_audio_sources; i++)
+	{
+		if (!audio_sources[i]->front_populated) {
+			audio_sources[i]->front_populated = 1;
+			int16_t *tmp = audio_sources[i]->front;
+			audio_sources[i]->front = audio_sources[i]->back;
+			audio_sources[i]->back = tmp;
+			if (audio_sources[i]->num_channels == 2) {
+				audio_sources[i]->buffer_pos = min_buffer_pos;
+			} else {
+				audio_sources[i]->buffer_pos = min_buffer_pos / 2;
+			}
+			do_signal = 1;
+		}
+	}
+	return do_signal;
+}
+
 #define BUFFER_INC_RES 0x40000000UL
 
 void render_audio_adjust_clock(audio_source *src, uint64_t master_clock, uint64_t sample_divider)
 {
-	src->buffer_inc = ((BUFFER_INC_RES * (uint64_t)sample_rate) / master_clock) * sample_divider;
+	src->buffer_inc = ((BUFFER_INC_RES * sample_divider * (uint64_t)sample_rate) / master_clock);
 }
 
 void render_audio_adjust_speed(float adjust_ratio)
@@ -150,13 +228,14 @@ void render_audio_adjust_speed(float adjust_ratio)
 	}
 }
 
-audio_source *render_audio_source(uint64_t master_clock, uint64_t sample_divider, uint8_t channels)
+audio_source *render_audio_source(const char *name, uint64_t master_clock, uint64_t sample_divider, uint8_t channels)
 {
 	audio_source *ret = NULL;
 	uint32_t alloc_size = render_is_audio_sync() ? channels * buffer_samples : nearest_pow2(render_min_buffered() * 4 * channels);
 	render_lock_audio();
 		if (num_audio_sources < 8) {
 			ret = calloc(1, sizeof(audio_source));
+			ret->name = name;
 			ret->back = malloc(alloc_size * sizeof(int16_t));
 			ret->front = render_is_audio_sync() ? malloc(alloc_size * sizeof(int16_t)) : ret->back;
 			ret->front_populated = 0;
@@ -183,7 +262,7 @@ audio_source *render_audio_source(uint64_t master_clock, uint64_t sample_divider
 		ret->gain_mult = 1.0f;
 	}
 	render_audio_created(ret);
-	
+
 	return ret;
 }
 
@@ -211,7 +290,7 @@ void render_pause_source(audio_source *src)
 				break;
 			}
 		}
-		
+
 	render_unlock_audio();
 	if (found) {
 		render_source_paused(src, remaining_sources);
@@ -250,7 +329,7 @@ void render_free_source(audio_source *src)
 		render_pause_source(src);
 		num_inactive_audio_sources--;
 	}
-	
+
 	free(src->front);
 	if (render_is_audio_sync()) {
 		free(src->back);
@@ -283,7 +362,7 @@ void render_put_mono_sample(audio_source *src, int16_t value)
 	{
 		src->buffer_fraction -= BUFFER_INC_RES;
 		interp_sample(src, src->last_left, value);
-		
+
 		if (((src->buffer_pos - base) & src->mask) >= sync_samples) {
 			render_do_audio_ready(src);
 		}
@@ -301,10 +380,10 @@ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right)
 	while (src->buffer_fraction > BUFFER_INC_RES)
 	{
 		src->buffer_fraction -= BUFFER_INC_RES;
-		
+
 		interp_sample(src, src->last_left, left);
 		interp_sample(src, src->last_right, right);
-		
+
 		if (((src->buffer_pos - base) & src->mask)/2 >= sync_samples) {
 			render_do_audio_ready(src);
 		}

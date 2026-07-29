@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifndef SERIALIZE_DEFAULT_SIZE
-#define SERIALIZE_DEFAULT_SIZE (256*1024) //default to enough for a Genesis save state
-#endif
-
 typedef struct {
 	size_t  size;
 	size_t  storage;
@@ -32,7 +28,7 @@ struct deserialize_buffer {
 };
 
 enum {
-	SECTION_END_OF_SERIALIZATION,
+	SECTION_HEADER,
 	SECTION_68000,
 	SECTION_Z80,
 	SECTION_VDP,
@@ -47,7 +43,15 @@ enum {
 	SECTION_MAPPER,
 	SECTION_EEPROM,
 	SECTION_CART_RAM,
-	SECTION_TMSS
+	SECTION_TMSS,
+	SECTION_SUB_68000,
+	SECTION_GATE_ARRAY,
+	SECTION_CDD_MCU,
+	SECTION_LC8951,
+	SECTION_RF5C164,
+	SECTION_CDD_FADER,
+	SECTION_CDROM,
+	SECTION_COLECO_IO
 };
 
 void init_serialize(serialize_buffer *buf);
@@ -68,7 +72,7 @@ uint8_t load_int8(deserialize_buffer *buf);
 void load_buffer8(deserialize_buffer *buf, void *dst, size_t len);
 void load_buffer16(deserialize_buffer *buf, uint16_t *dst, size_t len);
 void load_buffer32(deserialize_buffer *buf, uint32_t *dst, size_t len);
-int load_section(deserialize_buffer *buf);
+void load_section(deserialize_buffer *buf);
 uint8_t save_to_file(serialize_buffer *buf, char *path);
 uint8_t load_from_file(deserialize_buffer *buf, char *path);
 #endif //SERIALIZE_H
