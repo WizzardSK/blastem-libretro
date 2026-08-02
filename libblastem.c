@@ -305,6 +305,9 @@ RETRO_API void retro_unload_game(void)
 	media.buffer = NULL;
 	current_system->free_context(current_system);
 	current_system = NULL;
+	//the next system loaded has never run, so retro_run() must start it rather
+	//than resume it; resuming would enter the recompiler at a NULL resume_pc
+	started = 0;
 }
 
 /* Gets region of game. */
