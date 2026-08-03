@@ -270,7 +270,9 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 			media.name = basename_no_extension(game->path);
 			media.extension = path_extension(game->path);
 		}
-		media.buffer = malloc(nearest_pow2(game->size));
+		//the buffer is freed with aligned_free() by the system context, so it
+		//needs the alignment header that aligned_calloc() puts in front of it
+		media.buffer = aligned_calloc(1, nearest_pow2(game->size), 16);
 		memcpy(media.buffer, game->data, game->size);
 		media.size = game->size;
 	} else {
