@@ -291,6 +291,15 @@ uint32_t load_media(char * filename, system_media *dst, system_type *stype)
 	return ret;
 }
 
+//media->extension is NULL for a file with no dot in its name, and for libretro
+//content handed to the core without a path, so every check here has to tolerate
+//it. Comparison is case insensitive because path_extension() returns the
+//extension exactly as the user spelled it.
+static uint8_t ext_is(system_media *media, const char *ext)
+{
+	return media->extension && !strcasecmp(ext, media->extension);
+}
+
 system_type detect_system_type(system_media *media)
 {
 	static char *pico_names[] = {
@@ -314,7 +323,7 @@ system_type detect_system_type(system_media *media)
 		//This string is part of the "security" block so is more reliable than checking for "SEGA 32X"
 		//in the system type header field
 		static const char *mars_security = "MARS Initial & Security Program          Cartridge Version";
-		if (safe_cmp(mars_security, 0x512, media->buffer, media->size) || !strcmp("32x", media->extension)) {
+		if (safe_cmp(mars_security, 0x512, media->buffer, media->size) || ext_is(media, "32x")) {
 			return SYSTEM_32X;
 		}
 		return SYSTEM_GENESIS;
@@ -323,7 +332,7 @@ system_type detect_system_type(system_media *media)
 		|| safe_cmp("TMR SEGA", 0x3FF0, media->buffer, media->size)
 		|| safe_cmp("TMR SEGA", 0x7FF0, media->buffer, media->size)
 	) {
-		return strcmp("gg", media->extension) ? SYSTEM_SMS : SYSTEM_GAME_GEAR;
+		return ext_is(media, "gg") ? SYSTEM_GAME_GEAR : SYSTEM_SMS;
 	}
 	if (media->size > 400) {
 		uint8_t *buffer = media->buffer;
@@ -370,33 +379,29 @@ system_type detect_system_type(system_media *media)
 	//TODO: Detect Jaguar ROMs here
 
 	//Header based detection failed, examine filename for clues
-	if (media->extension) {
-		if (!strcasecmp("md", media->extension) || !strcasecmp("gen", media->extension)) {
-			return SYSTEM_GENESIS;
-		}
-		if (!strcasecmp("32x", media->extension)) {
-			return SYSTEM_32X;
-		}
-		if (!strcasecmp("sms", media->extension)) {
-			return SYSTEM_SMS;
-		}
-		if (!strcasecmp("gg", media->extension)) {
-			return SYSTEM_GAME_GEAR;
-		}
-		if (!strcasecmp("sg", media->extension) || !strcasecmp("sg1", media->extension)) {
-			return SYSTEM_SG1000;
-		}
-		if (!strcasecmp("sc", media->extension) || !strcasecmp("sf7", media->extension) ||
-			!strcasecmp("sc3", media->extension)
-		) {
-			return SYSTEM_SC3000;
-		}
-		if (!strcasecmp("j64", media->extension)) {
-			return SYSTEM_JAGUAR;
-		}
-		if (!strcasecmp("col", media->extension)) {
-			return SYSTEM_COLECOVISION;
-		}
+	if (ext_is(media, "md") || ext_is(media, "gen")) {
+		return SYSTEM_GENESIS;
+	}
+	if (ext_is(media, "32x")) {
+		return SYSTEM_32X;
+	}
+	if (ext_is(media, "sms")) {
+		return SYSTEM_SMS;
+	}
+	if (ext_is(media, "gg")) {
+		return SYSTEM_GAME_GEAR;
+	}
+	if (ext_is(media, "sg") || ext_is(media, "sg1")) {
+		return SYSTEM_SG1000;
+	}
+	if (ext_is(media, "sc") || ext_is(media, "sf7") || ext_is(media, "sc3")) {
+		return SYSTEM_SC3000;
+	}
+	if (ext_is(media, "j64")) {
+		return SYSTEM_JAGUAR;
+	}
+	if (ext_is(media, "col")) {
+		return SYSTEM_COLECOVISION;
 	}
 
 	//More certain checks failed, look for a valid 68K reset vector
