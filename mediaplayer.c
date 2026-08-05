@@ -950,9 +950,14 @@ static void resume_player(system_header *system)
 #endif
 			break;
 		}
-	//TODO: Fix this for libretro build properly
 #ifndef IS_LIB
 		render_update_display();
+#else
+		//A libretro frontend expects retro_run() to return once per frame. The
+		//other systems get there because presenting a frame calls request_exit(),
+		//but the player has no video at all, so it has to yield on its own or the
+		//frontend never regains control.
+		player->should_return = 1;
 #endif
 	}
 }

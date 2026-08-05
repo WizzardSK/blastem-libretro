@@ -188,6 +188,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
 
 static vid_std video_standard;
 static uint32_t last_width, last_height;
+static uint8_t frame_presented;
 static uint32_t overscan_top, overscan_bot, overscan_left, overscan_right;
 static void update_overscan(void)
 {
@@ -251,11 +252,18 @@ RETRO_API void retro_reset(void)
 static uint8_t started;
 RETRO_API void retro_run(void)
 {
+	frame_presented = 0;
 	if (started) {
 		current_system->resume_context(current_system);
 	} else {
 		current_system->start_context(current_system, NULL);
 		started = 1;
+	}
+	//The media player has no video, so it returns without presenting anything.
+	//Hand the frontend the (blank) framebuffer anyway so it still gets one frame
+	//per call and its pacing and audio sync have something to run against.
+	if (!frame_presented) {
+		render_framebuffer_updated(render_get_active_framebuffer(), LINEBUF_SIZE);
 	}
 }
 
@@ -501,6 +509,7 @@ void render_framebuffer_updated(uint8_t which, int width)
 		last_height = height;
 	}
 	retro_video_refresh(fb + overscan_left + LINEBUF_SIZE * overscan_top, width, height, LINEBUF_SIZE * sizeof(uint32_t));
+	frame_presented = 1;
 	system_request_exit(current_system, 0);
 }
 
