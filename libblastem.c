@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "libretro.h"
@@ -12,6 +13,34 @@
 #include "cdimage.h"
 
 tern_node *config;
+
+//The machines the standalone build can force with "-m". Detection handles most
+//of them from the media itself, but it cannot tell a LaserActive disc from any
+//other Sega CD one, and header based guesses are wrong often enough on Pico and
+//Copera titles to be worth overriding.
+//
+//"jag" is deliberately missing: alloc_config_system() has no case for
+//SYSTEM_JAGUAR and returns NULL, so offering it could only ever fail the load.
+//"laseractive" keeps the spelling it shipped with, because frontends persist
+//the chosen value in their config.
+static const struct {
+	const char *value;
+	system_type stype;
+} system_type_options[] = {
+	{ "gen",         SYSTEM_GENESIS },
+	{ "sms",         SYSTEM_SMS },
+	{ "gg",          SYSTEM_GAME_GEAR },
+	{ "sg1000",      SYSTEM_SG1000 },
+	{ "sc3000",      SYSTEM_SC3000 },
+	{ "32x",         SYSTEM_32X },
+	{ "32xcd",       SYSTEM_32XCD },
+	{ "pico",        SYSTEM_PICO },
+	{ "copera",      SYSTEM_COPERA },
+	{ "laseractive", SYSTEM_LASERACTIVE },
+	{ "mediaplayer", SYSTEM_MEDIA_PLAYER }
+};
+#define NUM_SYSTEM_TYPE_OPTIONS (sizeof(system_type_options)/sizeof(*system_type_options))
+
 static retro_environment_t retro_environment;
 RETRO_API void retro_set_environment(retro_environment_t re)
 {
@@ -57,13 +86,19 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 	};
 	re(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void *)scio);
 
-	//Pioneer LaserActive images are indistinguishable from other Sega CD media, so
-	//detect_system_type() can never return SYSTEM_LASERACTIVE on its own. The standalone
-	//build relies on the "-m laser" switch for this; expose the same choice as an option.
-	static const struct retro_variable vars[] = {
-		{ "blastem_system_type", "System type; auto|laseractive" },
+	//Built from the table rather than spelled out so the advertised values and the
+	//ones option_system_type() accepts cannot drift apart. Rebuilt from scratch on
+	//every call because a frontend may set the environment callback more than once.
+	static char system_type_desc[256];
+	int len = snprintf(system_type_desc, sizeof(system_type_desc), "System type; auto");
+	for (size_t i = 0; i < NUM_SYSTEM_TYPE_OPTIONS && len < (int)sizeof(system_type_desc); i++) {
+		len += snprintf(system_type_desc + len, sizeof(system_type_desc) - len, "|%s", system_type_options[i].value);
+	}
+	static struct retro_variable vars[] = {
+		{ "blastem_system_type", NULL },
 		{ NULL, NULL }
 	};
+	vars[0].value = system_type_desc;
 	re(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
 
 	const char *system_dir = NULL;
@@ -282,8 +317,10 @@ static system_type option_system_type(void)
 	if (!retro_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var) || !var.value) {
 		return SYSTEM_UNKNOWN;
 	}
-	if (!strcmp(var.value, "laseractive")) {
-		return SYSTEM_LASERACTIVE;
+	for (size_t i = 0; i < NUM_SYSTEM_TYPE_OPTIONS; i++) {
+		if (!strcmp(var.value, system_type_options[i].value)) {
+			return system_type_options[i].stype;
+		}
 	}
 	return SYSTEM_UNKNOWN;
 }
