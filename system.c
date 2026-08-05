@@ -371,30 +371,30 @@ system_type detect_system_type(system_media *media)
 
 	//Header based detection failed, examine filename for clues
 	if (media->extension) {
-		if (!strcmp("md", media->extension) || !strcmp("gen", media->extension)) {
+		if (!strcasecmp("md", media->extension) || !strcasecmp("gen", media->extension)) {
 			return SYSTEM_GENESIS;
 		}
-		if (!strcmp("32x", media->extension)) {
+		if (!strcasecmp("32x", media->extension)) {
 			return SYSTEM_32X;
 		}
-		if (!strcmp("sms", media->extension)) {
+		if (!strcasecmp("sms", media->extension)) {
 			return SYSTEM_SMS;
 		}
-		if (!strcmp("gg", media->extension)) {
+		if (!strcasecmp("gg", media->extension)) {
 			return SYSTEM_GAME_GEAR;
 		}
-		if (!strcmp("sg", media->extension) || !strcmp("sg1", media->extension)) {
+		if (!strcasecmp("sg", media->extension) || !strcasecmp("sg1", media->extension)) {
 			return SYSTEM_SG1000;
 		}
-		if (!strcmp("sc", media->extension) || !strcmp("sf7", media->extension) ||
-			!strcmp("sc3", media->extension)
+		if (!strcasecmp("sc", media->extension) || !strcasecmp("sf7", media->extension) ||
+			!strcasecmp("sc3", media->extension)
 		) {
 			return SYSTEM_SC3000;
 		}
-		if (!strcmp("j64", media->extension)) {
+		if (!strcasecmp("j64", media->extension)) {
 			return SYSTEM_JAGUAR;
 		}
-		if (!strcmp("col", media->extension)) {
+		if (!strcasecmp("col", media->extension)) {
 			return SYSTEM_COLECOVISION;
 		}
 	}
