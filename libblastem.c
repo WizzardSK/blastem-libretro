@@ -49,7 +49,7 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 	//would make the frontend hand us the raw interleaved buffer instead and load garbage.
 	static const struct retro_system_content_info_override scio[] = {
 		{
-			.extensions = "md|gen|32x|sms|gg|sg|sc|sf7|col|vgm|flac|wav|bin|rom",
+			.extensions = "md|gen|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|vgm|flac|wav|bin|rom",
 			.need_fullpath = 0,
 			.persistent_data = 0
 		},
@@ -143,7 +143,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
 {
 	info->library_name = "BlastEm";
 	info->library_version = BLASTEM_VERSION;
-	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sc|sf7|col|cue|toc|iso|vgm|flac|wav|bin|rom";
+	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|vgm|flac|wav|bin|rom";
 	info->need_fullpath = 1;
 	info->block_extract = 0;
 }
