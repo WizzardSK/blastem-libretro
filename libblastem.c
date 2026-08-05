@@ -56,7 +56,16 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 		{0}
 	};
 	re(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void *)scio);
-	
+
+	//Pioneer LaserActive images are indistinguishable from other Sega CD media, so
+	//detect_system_type() can never return SYSTEM_LASERACTIVE on its own. The standalone
+	//build relies on the "-m laser" switch for this; expose the same choice as an option.
+	static const struct retro_variable vars[] = {
+		{ "blastem_system_type", "System type; auto|laseractive" },
+		{ NULL, NULL }
+	};
+	re(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
+
 	const char *system_dir = NULL;
 	re(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir);
 	printf("system_dir: %s\n", system_dir);
@@ -65,6 +74,9 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 		config = tern_insert_path(config, "system\0scd_bios_eu\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_E.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0scd_bios_jp\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_J.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0coleco_bios_path\0", (tern_val){.ptrval = alloc_concat(system_dir, "/colecovision.rom")}, TVAL_PTR);
+		//Without an absolute path here alloc_laseractive() falls back to read_bundled_file(),
+		//which looks next to the standalone binary and finds nothing in a libretro build.
+		config = tern_insert_path(config, "system\0laseractive_upd_rom\0", (tern_val){.ptrval = alloc_concat(system_dir, "/laseractive_dyw_1322a.bin")}, TVAL_PTR);
 	}
 }
 
@@ -261,6 +273,18 @@ RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
 }
 
+static system_type option_system_type(void)
+{
+	struct retro_variable var = { .key = "blastem_system_type" };
+	if (!retro_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var) || !var.value) {
+		return SYSTEM_UNKNOWN;
+	}
+	if (!strcmp(var.value, "laseractive")) {
+		return SYSTEM_LASERACTIVE;
+	}
+	return SYSTEM_UNKNOWN;
+}
+
 /* Loads a game. */
 static system_type stype;
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
@@ -280,6 +304,12 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 		media.size = game->size;
 	} else {
 		load_media((char *)game->path, &media, &stype);
+	}
+	//Same precedence as blastem.c: an explicit choice wins over whatever load_media()
+	//worked out, and detection only runs when nothing has been decided yet.
+	system_type force_stype = option_system_type();
+	if (force_stype != SYSTEM_UNKNOWN) {
+		stype = force_stype;
 	}
 	if (stype == SYSTEM_UNKNOWN) {
 		stype = detect_system_type(&media);
