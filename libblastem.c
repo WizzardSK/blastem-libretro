@@ -143,7 +143,10 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
 {
 	info->library_name = "BlastEm";
 	info->library_version = BLASTEM_VERSION;
-	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|vgm|flac|wav|bin|rom";
+	//gz and vgz are absent from the content info override for the same reason as
+	//smd: they only decompress on the need_fullpath path, where romopen() is a
+	//gzopen(). Handed over as data they would be loaded as raw deflate streams.
+	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|vgm|vgz|flac|wav|bin|rom|gz";
 	info->need_fullpath = 1;
 	info->block_extract = 0;
 }
