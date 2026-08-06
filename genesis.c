@@ -43,14 +43,16 @@ uint32_t MCLKS_PER_68K;
 #define MAX_SOUND_CYCLES 100000
 #endif
 
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 #define Z80_CYCLE cycles
 #define Z80_OPTS opts
 #define z80_handle_code_write(...)
-#define int_num int_priority
 #else
 #define Z80_CYCLE current_cycle
 #define Z80_OPTS options
+#endif
+#ifdef NEW_CORE
+#define int_num int_priority
 #endif
 
 void genesis_serialize(genesis_context *gen, serialize_buffer *buf, uint32_t m68k_pc, uint8_t all)
@@ -451,7 +453,7 @@ static void adjust_int_cycle(m68k_context * context, vdp_context * v_context)
 static void z80_next_int_pulse(z80_context * z_context)
 {
 	genesis_context * gen = z_context->system;
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	z_context->int_cycle = vdp_next_vint_z80(gen->vdp);
 	z_context->int_end_cycle = z_context->int_cycle + Z80_INT_PULSE_MCLKS;
 	z_context->int_value = 0xFF;
@@ -468,7 +470,7 @@ static void sync_z80(genesis_context *gen, uint32_t mclks)
 	z80_context *z_context = gen->z80;
 #ifndef NO_Z80
 	if (z80_enabled) {
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 		if (z_context->int_cycle == 0xFFFFFFFFU) {
 			z80_next_int_pulse(z_context);
 		}
@@ -515,14 +517,31 @@ static void sync_sound(genesis_context * gen, uint32_t target)
 #define REFRESH_INTERVAL 128
 #define REFRESH_DELAY 2
 
-void gen_update_refresh(m68k_context *context)
+//Advances the refresh counter by elapsed master cycles and returns the refresh
+//delay incurred along the way. The delay cycles are themselves time in which the
+//counter keeps running, so they have to be fed back into it. Doing that in a loop
+//rather than in a single division is what makes the result independent of how
+//large the chunks are that the caller happens to hand us; the interpreter and the
+//JIT sync at different granularity, so anything chunk-dependent makes the two
+//cores drift apart.
+static uint32_t refresh_advance(genesis_context *gen, uint32_t elapsed)
 {
 	uint32_t interval = MCLKS_PER_68K * REFRESH_INTERVAL;
+	uint32_t delay = 0;
+	gen->refresh_counter += elapsed;
+	while (gen->refresh_counter >= interval) {
+		gen->refresh_counter -= interval;
+		gen->refresh_counter += REFRESH_DELAY * MCLKS_PER_68K;
+		delay += REFRESH_DELAY * MCLKS_PER_68K;
+	}
+	return delay;
+}
+
+void gen_update_refresh(m68k_context *context)
+{
 	genesis_context *gen = context->system;
-	gen->refresh_counter += context->cycles - gen->last_sync_cycle;
+	context->cycles += refresh_advance(gen, context->cycles - gen->last_sync_cycle);
 	gen->last_sync_cycle = context->cycles;
-	context->cycles += REFRESH_DELAY * MCLKS_PER_68K * (gen->refresh_counter / interval);
-	gen->refresh_counter = gen->refresh_counter % interval;
 }
 
 void gen_update_refresh_free_access(m68k_context *context)
@@ -532,21 +551,12 @@ void gen_update_refresh_free_access(m68k_context *context)
 	if (before < gen->last_sync_cycle) {
 		return;
 	}
-	//Add refresh delays for any accesses that happened beofre the current one
-	gen->refresh_counter += before - gen->last_sync_cycle;
-	uint32_t interval = MCLKS_PER_68K * REFRESH_INTERVAL;
-	uint32_t delay = REFRESH_DELAY * MCLKS_PER_68K * (gen->refresh_counter / interval);
-	if (delay) {
-		//To avoid the extra cycles being absorbed in the refresh free update below, we need to update again
-		gen->refresh_counter = gen->refresh_counter % interval;
-		gen->refresh_counter += delay;
-		delay += REFRESH_DELAY * MCLKS_PER_68K * (gen->refresh_counter / interval);
-		context->cycles += delay;
-	}
+	//Add refresh delays for any accesses that happened before the current one
+	context->cycles += refresh_advance(gen, before - gen->last_sync_cycle);
 	gen->last_sync_cycle = context->cycles;
 	//advance refresh counter for the current access, but don't generate delays
 	gen->refresh_counter += 4*MCLKS_PER_68K;
-	gen->refresh_counter = gen->refresh_counter % interval;
+	gen->refresh_counter = gen->refresh_counter % (MCLKS_PER_68K * REFRESH_INTERVAL);
 }
 
 void gen_update_refresh_no_wait(m68k_context *context)
@@ -678,14 +688,14 @@ static m68k_context *sync_components(m68k_context * context, uint32_t address)
 			}
 #endif
 		}
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 		if (gen->header.save_state) {
 #else
 		if (gen->header.save_state && (z_context->pc || !z_context->native_pc || z_context->reset || !z_context->busreq)) {
 #endif
 			uint8_t slot = gen->header.save_state - 1;
 			gen->header.save_state = 0;
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 			if (z_context->native_pc && !z_context->reset) {
 				//advance Z80 core to the start of an instruction
 				while (!z_context->pc)
@@ -1023,7 +1033,7 @@ static void enter_z80_debugger_immediately(void *context)
 	if (gen->z80->sync_cycle > gen->z80->Z80_CYCLE + 1) {
 		gen->z80->sync_cycle = gen->z80->Z80_CYCLE + 1;
 	}
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	if (gen->z80->target_cycle > gen->z80->sync_cycle) {
 		gen->z80->target_cycle = gen->z80->sync_cycle;
 	}
@@ -2907,7 +2917,7 @@ static genesis_context *shared_init(uint32_t system_opts, rom_info *rom, uint8_t
 	z80_options *z_opts = malloc(sizeof(z80_options));
 	init_z80_opts(z_opts, z80_map, 5, NULL, 0, MCLKS_PER_Z80, 0xFFFF);
 	gen->z80 = init_z80_context(z_opts);
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	gen->z80->next_int_pulse = z80_next_int_pulse;
 #endif
 	z80_assert_reset(gen->z80, 0);
