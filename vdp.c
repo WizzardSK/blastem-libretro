@@ -3661,12 +3661,26 @@ static void vdp_h40_line(vdp_context * context)
 			}
 		}
 	}
-	advance_output_line(context);
 	//169-242 (inclusive)
 	for (int i = 0; i < 27; i++)
 	{
+		if (169 + i == BG_START_SLOT + LINEBUF_SIZE/2) {
+			//the slot-at-a-time path advances the output line here, not before
+			//the whole run of sprite slots
+			advance_output_line(context);
+			if (!context->output) {
+				context->output = dummy_buffer;
+			}
+		}
 		render_sprite_cells(context);
 		scan_sprite_table(context->vcounter, context);
+		if (i == 16) {
+			//the loop walks slots 169-182 (i 0-13) and then 229-242 (i 14-26),
+			//so i 16 is slot 231. Slot 232 is an external slot rather than a
+			//sprite render slot, which is why this runs 27 times over 28 slots,
+			//but the external slot itself still has to happen.
+			external_slot(context);
+		}
 	}
 	//243
 	render_sprite_cells(context);
@@ -3694,8 +3708,8 @@ static void vdp_h40_line(vdp_context * context)
 	context->hscroll_b = context->vdpmem[address+2] << 8 | context->vdpmem[address+3];
 	context->hscroll_b_fine = context->hscroll_b & 0xF;
 	//printf("%d: HScroll A: %d, HScroll B: %d\n", context->vcounter, context->hscroll_a, context->hscroll_b);
-	//243-246 inclusive
-	for (int i = 0; i < 3; i++)
+	//245-246 inclusive
+	for (int i = 0; i < 2; i++)
 	{
 		render_sprite_cells(context);
 		scan_sprite_table(context->vcounter, context);
@@ -3723,19 +3737,27 @@ static void vdp_h40_line(vdp_context * context)
 	scan_sprite_table(context->vcounter, context);
 	context->buf_a_off = (context->buf_a_off + SCROLL_BUFFER_DRAW) & SCROLL_BUFFER_MASK;
 	context->buf_b_off = (context->buf_b_off + SCROLL_BUFFER_DRAW) & SCROLL_BUFFER_MASK;
+	//249
+	read_map_scroll_a(0, context->vcounter, context);
 	//250
 	render_sprite_cells(context);
 	scan_sprite_table(context->vcounter, context);
 	//251
+	render_map_1(context);
 	scan_sprite_table(context->vcounter, context);//Just a guess
 	//252
+	render_map_2(context);
 	scan_sprite_table(context->vcounter, context);//Just a guess
+	//253
+	read_map_scroll_b(0, context->vcounter, context);
 	//254
 	render_sprite_cells(context);
 	scan_sprite_table(context->vcounter, context);
 	//255
+	render_map_3(context);
 	scan_sprite_table(context->vcounter, context);
 	//0
+	render_map_output(context->vcounter, 0, context);
 	scan_sprite_table(context->vcounter, context);//Just a guess
 	//seems like the sprite table scan fills a shift register
 	//values are FIFO, but unused slots precede used slots
@@ -3744,21 +3766,29 @@ static void vdp_h40_line(vdp_context * context)
 	context->cur_slot = context->slot_counter;
 	context->sprite_x_offset = 0;
 	context->sprite_draws = MAX_SPRITES_LINE;
-	//background planes and layer compositing
-	for (int col = 0; col < 42; col+=2)
+	//background planes and layer compositing, with sprite rendering phase 2
+	//interleaved exactly as COLUMN_RENDER_BLOCK does it: one read_sprite_x per
+	//column between read_map_scroll_b and render_map_3. Batching them after the
+	//loop instead changes which line a sprite ends up attributed to.
+	//Column 0 is rendered by the tail-of-line slots above, so this starts at 2.
+	for (int col = 2; col < 42; col+=2)
 	{
 		read_map_scroll_a(col, context->vcounter, context);
+		if (col & 7) {
+			//COLUMN_RENDER_BLOCK has an external slot here; the refresh variant
+			//used for every fourth column does not
+			external_slot(context);
+		}
 		render_map_1(context);
 		render_map_2(context);
 		read_map_scroll_b(col, context->vcounter, context);
+		read_sprite_x(context->vcounter, context);
 		render_map_3(context);
 		render_map_output(context->vcounter, col, context);
 	}
-	//sprite rendering phase 2
-	for (int i = 0; i < MAX_SPRITES_LINE; i++)
-	{
-		read_sprite_x(context->vcounter, context);
-	}
+	//161-162
+	external_slot(context);
+	external_slot(context);
 	//163
 	context->cur_slot = MAX_SPRITES_LINE-1;
 	memset(context->linebuf, 0, LINEBUF_SIZE);
