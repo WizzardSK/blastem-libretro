@@ -183,7 +183,7 @@ uint8_t z80_load_gst(z80_context * context, FILE * gstfile)
 	}
 	uint8_t * curpos = regdata;
 	uint8_t f = *(curpos++);
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	context->main[6] = context->last_flag_result = f;
 	context->chflags = ((f & 1) ? 0x80 : 0) | ((f & 0x10) ? 8 : 0);
 	context->nflag = f & 2;
@@ -226,7 +226,7 @@ uint8_t z80_load_gst(z80_context * context, FILE * gstfile)
 	context->sp = read_le_16(curpos);
 	curpos += 4;
 	f = *(curpos++);
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	context->alt[6] = f;
 	context->alt[7] = *curpos;
 	curpos += 3;
@@ -281,12 +281,12 @@ uint8_t z80_load_gst(z80_context * context, FILE * gstfile)
 	{
 		if (context->mem_pointers[0][i] != buffer[i]) {
 			context->mem_pointers[0][i] = buffer[i];
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 			z80_handle_code_write(i, context);
 #endif
 		}
 	}
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	context->native_pc = NULL;
 	context->extra_pc = NULL;
 #endif
@@ -371,7 +371,7 @@ uint8_t z80_save_gst(z80_context * context, FILE * gstfile)
 	uint8_t regdata[GST_Z80_REG_SIZE];
 	uint8_t * curpos = regdata;
 	memset(regdata, 0, sizeof(regdata));
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	uint8_t f = context->last_flag_result;
 	if (context->zflag) { f |= 0x40; }
 	if (context->chflags & 8) { f |= 0x10; }
@@ -417,7 +417,7 @@ uint8_t z80_save_gst(z80_context * context, FILE * gstfile)
 	curpos += 4;
 	write_le_16(curpos, context->sp);
 	curpos += 4;
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	*(curpos++) = context->alt[6];
 	*curpos = context->alt[7];
 	
