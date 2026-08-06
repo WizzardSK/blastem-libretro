@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "libretro.h"
@@ -12,6 +13,34 @@
 #include "cdimage.h"
 
 tern_node *config;
+
+//The machines the standalone build can force with "-m". Detection handles most
+//of them from the media itself, but it cannot tell a LaserActive disc from any
+//other Sega CD one, and header based guesses are wrong often enough on Pico and
+//Copera titles to be worth overriding.
+//
+//"jag" is deliberately missing: alloc_config_system() has no case for
+//SYSTEM_JAGUAR and returns NULL, so offering it could only ever fail the load.
+//"laseractive" keeps the spelling it shipped with, because frontends persist
+//the chosen value in their config.
+static const struct {
+	const char *value;
+	system_type stype;
+} system_type_options[] = {
+	{ "gen",         SYSTEM_GENESIS },
+	{ "sms",         SYSTEM_SMS },
+	{ "gg",          SYSTEM_GAME_GEAR },
+	{ "sg1000",      SYSTEM_SG1000 },
+	{ "sc3000",      SYSTEM_SC3000 },
+	{ "32x",         SYSTEM_32X },
+	{ "32xcd",       SYSTEM_32XCD },
+	{ "pico",        SYSTEM_PICO },
+	{ "copera",      SYSTEM_COPERA },
+	{ "laseractive", SYSTEM_LASERACTIVE },
+	{ "mediaplayer", SYSTEM_MEDIA_PLAYER }
+};
+#define NUM_SYSTEM_TYPE_OPTIONS (sizeof(system_type_options)/sizeof(*system_type_options))
+
 static retro_environment_t retro_environment;
 RETRO_API void retro_set_environment(retro_environment_t re)
 {
@@ -44,16 +73,34 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 
 	re(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, (void *)desc);
 	
+	//NOTE: "smd" is deliberately absent here. Interleaved Super Magic Drive ROMs are
+	//unscrambled by load_media(), which only runs on the need_fullpath path. Adding smd
+	//would make the frontend hand us the raw interleaved buffer instead and load garbage.
 	static const struct retro_system_content_info_override scio[] = {
 		{
-			.extensions = "md|gen|sms|gg|sg|sc|col|vgm|flac|wav|bin|rom",
+			.extensions = "md|gen|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|vgm|flac|wav|bin|rom",
 			.need_fullpath = 0,
 			.persistent_data = 0
 		},
 		{0}
 	};
 	re(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void *)scio);
-	
+
+	//Built from the table rather than spelled out so the advertised values and the
+	//ones option_system_type() accepts cannot drift apart. Rebuilt from scratch on
+	//every call because a frontend may set the environment callback more than once.
+	static char system_type_desc[256];
+	int len = snprintf(system_type_desc, sizeof(system_type_desc), "System type; auto");
+	for (size_t i = 0; i < NUM_SYSTEM_TYPE_OPTIONS && len < (int)sizeof(system_type_desc); i++) {
+		len += snprintf(system_type_desc + len, sizeof(system_type_desc) - len, "|%s", system_type_options[i].value);
+	}
+	static struct retro_variable vars[] = {
+		{ "blastem_system_type", NULL },
+		{ NULL, NULL }
+	};
+	vars[0].value = system_type_desc;
+	re(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
+
 	const char *system_dir = NULL;
 	re(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir);
 	printf("system_dir: %s\n", system_dir);
@@ -62,6 +109,9 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 		config = tern_insert_path(config, "system\0scd_bios_eu\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_E.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0scd_bios_jp\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_J.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0coleco_bios_path\0", (tern_val){.ptrval = alloc_concat(system_dir, "/colecovision.rom")}, TVAL_PTR);
+		//Without an absolute path here alloc_laseractive() falls back to read_bundled_file(),
+		//which looks next to the standalone binary and finds nothing in a libretro build.
+		config = tern_insert_path(config, "system\0laseractive_upd_rom\0", (tern_val){.ptrval = alloc_concat(system_dir, "/laseractive_dyw_1322a.bin")}, TVAL_PTR);
 	}
 }
 
@@ -128,13 +178,17 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
 {
 	info->library_name = "BlastEm";
 	info->library_version = BLASTEM_VERSION;
-	info->valid_extensions = "md|gen|sms|gg|sg|sc|col|cue|toc|iso|vgm|flac|wav|bin|rom";
+	//gz and vgz are absent from the content info override for the same reason as
+	//smd: they only decompress on the need_fullpath path, where romopen() is a
+	//gzopen(). Handed over as data they would be loaded as raw deflate streams.
+	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|vgm|vgz|flac|wav|bin|rom|gz";
 	info->need_fullpath = 1;
 	info->block_extract = 0;
 }
 
 static vid_std video_standard;
 static uint32_t last_width, last_height;
+static uint8_t frame_presented;
 static uint32_t overscan_top, overscan_bot, overscan_left, overscan_right;
 static void update_overscan(void)
 {
@@ -198,11 +252,18 @@ RETRO_API void retro_reset(void)
 static uint8_t started;
 RETRO_API void retro_run(void)
 {
+	frame_presented = 0;
 	if (started) {
 		current_system->resume_context(current_system);
 	} else {
 		current_system->start_context(current_system, NULL);
 		started = 1;
+	}
+	//The media player has no video, so it returns without presenting anything.
+	//Hand the frontend the (blank) framebuffer anyway so it still gets one frame
+	//per call and its pacing and audio sync have something to run against.
+	if (!frame_presented) {
+		render_framebuffer_updated(render_get_active_framebuffer(), LINEBUF_SIZE);
 	}
 }
 
@@ -258,6 +319,20 @@ RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
 }
 
+static system_type option_system_type(void)
+{
+	struct retro_variable var = { .key = "blastem_system_type" };
+	if (!retro_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var) || !var.value) {
+		return SYSTEM_UNKNOWN;
+	}
+	for (size_t i = 0; i < NUM_SYSTEM_TYPE_OPTIONS; i++) {
+		if (!strcmp(var.value, system_type_options[i].value)) {
+			return system_type_options[i].stype;
+		}
+	}
+	return SYSTEM_UNKNOWN;
+}
+
 /* Loads a game. */
 static system_type stype;
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
@@ -277,6 +352,12 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 		media.size = game->size;
 	} else {
 		load_media((char *)game->path, &media, &stype);
+	}
+	//Same precedence as blastem.c: an explicit choice wins over whatever load_media()
+	//worked out, and detection only runs when nothing has been decided yet.
+	system_type force_stype = option_system_type();
+	if (force_stype != SYSTEM_UNKNOWN) {
+		stype = force_stype;
 	}
 	if (stype == SYSTEM_UNKNOWN) {
 		stype = detect_system_type(&media);
@@ -428,6 +509,7 @@ void render_framebuffer_updated(uint8_t which, int width)
 		last_height = height;
 	}
 	retro_video_refresh(fb + overscan_left + LINEBUF_SIZE * overscan_top, width, height, LINEBUF_SIZE * sizeof(uint32_t));
+	frame_presented = 1;
 	system_request_exit(current_system, 0);
 }
 
