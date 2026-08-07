@@ -85,6 +85,11 @@ int ensure_dir_exists(const char *path);
 char * readlink_alloc(char * path);
 //Prints an error message to stderr and to a message box if not in headless mode and then exits
 void fatal_error(char *format, ...);
+#ifdef IS_LIB
+//Called by fatal_error() before it exits. Implemented by the library front end,
+//which unwinds if it has somewhere to unwind to; returning lets the exit happen.
+void lib_fatal_error(void);
+#endif
 //Prints an information message to stdout and to a message box if not in headless mode and not attached to a console
 void info_message(char *format, ...);
 //Prints an information message to stderr and to a message box if not in headless mode and not attached to a console

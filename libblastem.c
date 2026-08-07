@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include "libretro.h"
 #include "system.h"
 #include "util.h"
@@ -109,6 +110,12 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 		config = tern_insert_path(config, "system\0scd_bios_eu\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_E.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0scd_bios_jp\0", (tern_val){.ptrval = alloc_concat(system_dir, "/bios_CD_J.bin")}, TVAL_PTR);
 		config = tern_insert_path(config, "system\0coleco_bios_path\0", (tern_val){.ptrval = alloc_concat(system_dir, "/colecovision.rom")}, TVAL_PTR);
+		//32x.c defaults these to bare filenames, which fopen() resolves against the
+		//working directory - the frontend's, never the system directory - so the
+		//32X BIOS ROMs were unreachable no matter where the user put them.
+		config = tern_insert_path(config, "system\0s32x_68k_bios\0", (tern_val){.ptrval = alloc_concat(system_dir, "/32X_G_BIOS.bin")}, TVAL_PTR);
+		config = tern_insert_path(config, "system\0s32x_main_bios\0", (tern_val){.ptrval = alloc_concat(system_dir, "/32X_M_BIOS.bin")}, TVAL_PTR);
+		config = tern_insert_path(config, "system\0s32x_sub_bios\0", (tern_val){.ptrval = alloc_concat(system_dir, "/32X_S_BIOS.bin")}, TVAL_PTR);
 		//Without an absolute path here alloc_laseractive() falls back to read_bundled_file(),
 		//which looks next to the standalone binary and finds nothing in a libretro build.
 		config = tern_insert_path(config, "system\0laseractive_upd_rom\0", (tern_val){.ptrval = alloc_concat(system_dir, "/laseractive_dyw_1322a.bin")}, TVAL_PTR);
@@ -378,6 +385,50 @@ static uint8_t is_cartridge_system(system_type stype)
 	}
 }
 
+//Building a system can hit fatal_error() - a missing Sega CD BIOS is the common
+//one - and in a library that means exit(), i.e. the frontend disappears without
+//so much as a message. Give it somewhere to land: a fatal error while a load is
+//in progress unwinds to retro_load_game(), which reports the failure the way a
+//frontend expects. Anything allocated by the half-built system is lost, which
+//beats taking the process with it.
+static jmp_buf fatal_recover;
+static uint8_t fatal_recover_valid;
+void lib_fatal_error(void)
+{
+	if (fatal_recover_valid) {
+		fatal_recover_valid = 0;
+		longjmp(fatal_recover, 1);
+	}
+}
+
+//The SH2 BIOS ROMs are not optional: without them the SH2s execute zeroes and
+//blastem stops at an unimplemented instruction, which is a fatal_error() from
+//inside retro_run() where there is nothing to unwind. Missing firmware is an
+//ordinary condition for a frontend, so refuse the load and say what is missing.
+//An empty placeholder file counts as missing: the SH2 vector table lives at
+//offset 0 and a reset vector of 0 is exactly what lands the emulator on the
+//unimplemented instruction at pc=0. Any real BIOS has a non-zero one.
+static uint8_t sh2_bios_usable(const char *key, const char *fallback)
+{
+	char *path = tern_find_path_default(config, key, (tern_val){.ptrval = (char *)fallback}, TVAL_PTR).ptrval;
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return 0;
+	}
+	uint8_t reset_vector[4] = {0};
+	size_t got = fread(reset_vector, 1, sizeof(reset_vector), f);
+	fclose(f);
+	if (got != sizeof(reset_vector)) {
+		return 0;
+	}
+	for (size_t i = 0; i < sizeof(reset_vector); i++) {
+		if (reset_vector[i]) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 //For a load that fails no system context ever takes ownership of the media, and
 //retro_unload_game() is not called either, so the buffer it left behind has to
 //be released here - it is the whole file, which is exactly the case worth not
@@ -397,6 +448,12 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 {
 	serialize_size_cache = 0;
 	stype = SYSTEM_UNKNOWN;
+	if (setjmp(fatal_recover)) {
+		release_media();
+		current_system = NULL;
+		return 0;
+	}
+	fatal_recover_valid = 1;
 	if (game->path) {
 		char *ext = path_extension(game->path);
 		uint8_t unsupported = is_unsupported_disc_format(ext);
@@ -432,9 +489,19 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 	if (is_cartridge_system(stype) && media.size > MAX_CART_SIZE) {
 		warning("%u byte image was detected as a cartridge, refusing to load it\n", (unsigned)media.size);
 		release_media();
+		fatal_recover_valid = 0;
+		return 0;
+	}
+	if ((stype == SYSTEM_32X || stype == SYSTEM_32XCD)
+		&& !(sh2_bios_usable("system\0s32x_main_bios\0", "32X_M_BIOS.bin")
+			&& sh2_bios_usable("system\0s32x_sub_bios\0", "32X_S_BIOS.bin"))) {
+		warning("32X needs the Main and Sub SH2 BIOS ROMs (32X_M_BIOS.bin and 32X_S_BIOS.bin) in the system directory\n");
+		release_media();
+		fatal_recover_valid = 0;
 		return 0;
 	}
 	current_system = alloc_config_system(stype, &media, 0, 0);
+	fatal_recover_valid = 0;
 	if (!current_system) {
 		release_media();
 		return 0;
