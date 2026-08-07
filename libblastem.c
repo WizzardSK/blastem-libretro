@@ -188,7 +188,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
 	//gz and vgz are absent from the content info override for the same reason as
 	//smd: they only decompress on the need_fullpath path, where romopen() is a
 	//gzopen(). Handed over as data they would be loaded as raw deflate streams.
-	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|vgm|vgz|flac|wav|bin|rom|gz";
+	info->valid_extensions = "md|gen|smd|32x|sms|gg|sg|sg1|sc|sc3|sf7|col|cue|toc|iso|chd|vgm|vgz|flac|wav|bin|rom|gz";
 	info->need_fullpath = 1;
 	info->block_extract = 0;
 }
@@ -346,11 +346,12 @@ static system_type option_system_type(void)
 //browser never filtered. Nothing downstream says no: load_media() has no case
 //for them, so the generic path reads the entire image into memory - several
 //hundred megabytes for a CD rip - and detect_system_type() then finds a "valid
-//looking 68K reset vector" in the CHD header and calls it a Genesis ROM. The
-//frontend sits frozen for the length of the load and then runs garbage.
+//looking 68K reset vector" in whatever header it landed on and calls it a
+//Genesis ROM. The frontend sits frozen for the length of the load and then runs
+//garbage.
 static uint8_t is_unsupported_disc_format(const char *ext)
 {
-	static const char *unsupported[] = { "chd", "ccd", "mds", "mdf", "nrg" };
+	static const char *unsupported[] = { "ccd", "mds", "mdf", "nrg" };
 	if (!ext) {
 		return 0;
 	}

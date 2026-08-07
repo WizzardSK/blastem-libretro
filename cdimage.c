@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "system.h"
+#include "cdimage.h"
 #include "paths.h"
 #include "wave.h"
 
@@ -138,7 +139,7 @@ static uint8_t bin_seek(system_media *media, uint32_t sector)
 	return track;
 }
 
-static uint8_t fake_read(uint32_t sector, uint32_t offset)
+uint8_t cdimage_fake_read(uint32_t sector, uint32_t offset)
 {
 	if (!offset || offset == 11 || (offset >= 16)) {
 		return 0;
@@ -163,11 +164,11 @@ static uint8_t bin_read(system_media *media, uint32_t offset)
 {
 	uint8_t retval;
 	if (media->in_fake_pregap == FAKE_DATA) {
-		retval = fake_read(media->cur_sector, offset);
+		retval = cdimage_fake_read(media->cur_sector, offset);
 	} else if (media->in_fake_pregap == FAKE_AUDIO) {
 		retval = 0;
 	} else if ((media->tracks[media->cur_track].sector_bytes < 2352 && offset < 16) || offset > (media->tracks[media->cur_track].sector_bytes + 16)) {
-		retval = fake_read(media->cur_sector, offset);
+		retval = cdimage_fake_read(media->cur_sector, offset);
 	} else if (media->tracks[media->cur_track].flac) {
 		if (offset & 3) {
 			retval = media->byte_storage[(offset & 3) - 1];
@@ -205,7 +206,7 @@ static uint8_t bin_subcode_read(system_media *media, uint32_t offset)
 	return media->tmp_buffer[offset];
 }
 
-static void print_toc(system_media *media)
+void cdimage_print_toc(system_media *media)
 {
 	track_info * tracks = media->tracks;
 	for (uint32_t i = 0; i < media->num_tracks; i++)
@@ -460,7 +461,7 @@ uint8_t parse_cue(system_media *media)
 		media->read = bin_read;
 		media->read_subcodes = bin_subcode_read;
 	}
-	print_toc(media);
+	cdimage_print_toc(media);
 	uint8_t valid = media->num_tracks > 0 && media->tracks[0].f != NULL;
 	media->type = valid ? MEDIA_CDROM : MEDIA_CART;
 	return valid;
@@ -643,7 +644,7 @@ uint8_t parse_toc(system_media *media)
 		media->read = bin_read;
 		media->read_subcodes = bin_subcode_read;
 	}
-	print_toc(media);
+	cdimage_print_toc(media);
 	uint8_t valid = media->num_tracks > 0 && media->tracks[0].f != NULL;
 	media->type = valid ? MEDIA_CDROM : MEDIA_CART;
 	return valid;
@@ -727,6 +728,7 @@ void cdimage_free(system_media *media)
 		return;
 	}
 	//dir, name, extension and orig_path are handled elsewhere
+	chdimage_free(media);
 	free(media->buffer);
 	free(media->tracks);
 }

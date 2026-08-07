@@ -94,6 +94,16 @@ struct system_media {
 	track_info   *tracks;
 	uint8_t      *tmp_buffer;
 	zip_file     *zip;
+	//CHD images keep every track in one file, so the handle and the sector
+	//caches belong to the media rather than to a track. Declared without the
+	//libchdr typedef so system.h stays free of its headers.
+	struct _chd_file *chd;
+	uint8_t      *chd_hunk;
+	uint8_t      *chd_frame;
+	uint32_t     chd_hunk_no;
+	uint32_t     chd_frame_no;
+	uint8_t      chd_hunk_valid;
+	uint8_t      chd_frame_valid;
 	seek_fun     seek;
 	read_fun     read;
 	read_fun     read_subcodes;

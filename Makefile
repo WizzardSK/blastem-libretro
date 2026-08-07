@@ -15,6 +15,13 @@ Z80_DISPATCH:=goto
 BUNDLED_LIBZ:=zlib/adler32.o zlib/compress.o zlib/crc32.o zlib/deflate.o zlib/gzclose.o zlib/gzlib.o zlib/gzread.o\
 	zlib/gzwrite.o zlib/infback.o zlib/inffast.o zlib/inflate.o zlib/inftrees.o zlib/trees.o zlib/uncompr.o zlib/zutil.o
 
+#CHD support. libchdr is vendored unmodified; its zstd codec is satisfied by a
+#stub (see libchdr/zstd.h) rather than by vendoring a compression library for the
+#one codec chdman does not use by default.
+BUNDLED_LIBCHDR:=libchdr/libchdr_bitstream.o libchdr/libchdr_cdrom.o libchdr/libchdr_chd.o \
+	libchdr/libchdr_flac.o libchdr/libchdr_huffman.o libchdr/zstd_stub.o lzma/LzmaDec.o
+CHD_CFLAGS:=-Ilibchdr/include -Ilibchdr -Ilzma -Izlib
+
 UTIL_LDFLAGS:=
 ifeq ($(OS),Windows)
 
@@ -284,7 +291,7 @@ endif
 COREOBJS:=system.o genesis.o vdp.o io.o romdb.o hash.o xband.o realtec.o i2c.o nor.o $(M68KOBJS) \
 	sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
 	$(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o gen_player.o coleco.o pico_pcm.o ymz263b.o \
-	segacd.o lc8951.o cdimage.o cdd_mcu.o cd_graphics.o cdd_fader.o sft_mapper.o mediaplayer.o \
+	segacd.o lc8951.o cdimage.o chdimage.o $(BUNDLED_LIBCHDR) cdd_mcu.o cd_graphics.o cdd_fader.o sft_mapper.o mediaplayer.o \
 	laseractive.o upd78k2_dis.o upd78k2.o osd_font.o pd0178.o radica.o 32x.o 32x_video.o sh2.o \
 	sh2_decode.o sh7095.o
 
@@ -381,9 +388,13 @@ endif
 $(OBJDIR) :
 	mkdir -p $(OBJDIR)/nuklear_ui
 	mkdir -p $(OBJDIR)/zlib
+	mkdir -p $(OBJDIR)/libchdr
+	mkdir -p $(OBJDIR)/lzma
 
 $(LIBOBJDIR) :
 	mkdir -p $(LIBOBJDIR)/zlib
+	mkdir -p $(LIBOBJDIR)/libchdr
+	mkdir -p $(LIBOBJDIR)/lzma
 
 libblastem.$(SO) : $(LIBOBJS:%.o=$(LIBOBJDIR)/%.o)
 	$(CC) -shared -o $@ $^ $(LDFLAGS)
@@ -440,6 +451,16 @@ $(OBJDIR)/%.o : %.S | $(ORDERONLY)
 
 $(OBJDIR)/%.o : %.c | $(ORDERONLY)
 	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+#libchdr and the LZMA decoder expect their own headers, plus the bundled zlib
+#under its unprefixed name, on the include path. Kept off the global CFLAGS so
+#nothing else picks up a zlib.h or zstd.h it did not ask for.
+$(OBJDIR)/libchdr/%.o : CFLAGS += $(CHD_CFLAGS)
+$(OBJDIR)/lzma/%.o : CFLAGS += $(CHD_CFLAGS)
+$(OBJDIR)/chdimage.o : CFLAGS += $(CHD_CFLAGS)
+$(LIBOBJDIR)/libchdr/%.o : LIBCFLAGS += $(CHD_CFLAGS)
+$(LIBOBJDIR)/lzma/%.o : LIBCFLAGS += $(CHD_CFLAGS)
+$(LIBOBJDIR)/chdimage.o : LIBCFLAGS += $(CHD_CFLAGS)
 
 $(OBJDIR)/%.o : %.m | $(ORDERONLY)
 	$(CC) $(CFLAGS) -c -MMD -o $@ $<
