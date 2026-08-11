@@ -190,6 +190,34 @@ uint32_t load_media(char * filename, system_media *dst, system_type *stype)
 		}
 		return make_iso_media(dst, filename);
 	}
+	//A CHD carries its own track table, so it never reaches the generic loader
+	//below - which would happily read the whole compressed image into memory.
+	if (ext && !strcasecmp(ext, "chd")) {
+		dst->orig_path = filename;
+		dst->dir = path_dirname(filename);
+		if (!dst->dir) {
+			dst->dir = path_current_dir();
+		}
+		dst->name = basename_no_extension(filename);
+		dst->extension = ext;
+		if (!parse_chd(dst)) {
+			free(dst->dir);
+			free(dst->name);
+			free(dst->extension);
+			dst->dir = dst->name = dst->extension = NULL;
+			return 0;
+		}
+		if (stype) {
+			//Same test the cue and toc paths use, against the first sector of
+			//the first data track that parse_chd() left in the buffer.
+			if (safe_cmp("SEGA 32X", 0x100, dst->buffer, dst->size)) {
+				*stype = SYSTEM_32XCD;
+			} else {
+				*stype = SYSTEM_SEGACD;
+			}
+		}
+		return dst->size;
+	}
 
 	ROMFILE f = romopen(filename, "rb");
 	if (!f) {

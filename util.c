@@ -477,6 +477,13 @@ void fatal_error(char *format, ...)
 	va_start(args, format);
 	log_msg(format, FATAL, args);
 	va_end(args);
+#ifdef IS_LIB
+	//exit() from inside a library takes the host program down with it - for the
+	//libretro core that means the frontend vanishes on things a frontend copes
+	//with routinely, such as missing BIOS files. Give the library a chance to
+	//unwind instead; it returns here if it has nowhere to unwind to.
+	lib_fatal_error();
+#endif
 	exit(1);
 }
 
