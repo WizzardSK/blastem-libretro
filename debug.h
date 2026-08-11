@@ -5,9 +5,12 @@
 #include "tern.h"
 #ifdef NEW_CORE
 #include "m68k.h"
-#include "z80.h"
 #else
 #include "m68k_core.h"
+#endif
+#ifdef NEW_Z80
+#include "z80.h"
+#else
 #include "z80_to_x86.h"
 #endif
 #include "upd78k2.h"

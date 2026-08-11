@@ -256,12 +256,15 @@ ifdef NO_FILE_CHOOSER
 CHOOSER:=nuklear_ui/filechooser_nulll.o
 endif
 
+#The generated Z80 core is normally selected together with the generated 68K
+#core, but the two are independent. NEW_Z80 can be set on its own to pair the
+#JIT 68K with the generated Z80, which is useful for narrowing down which core
+#a timing difference comes from.
 ifdef NEW_CORE
-Z80OBJS=z80.o z80inst.o
+NEW_Z80:=1
 M68KOBJS+= m68k.o
 CFLAGS+= -DNEW_CORE
 else
-Z80OBJS=z80inst.o z80_to_x86.o
 ifeq ($(CPU),x86_64)
 M68KOBJS+= m68k_core.o m68k_core_x86.o
 TRANSOBJS+= gen_x86.o backend_x86.o
@@ -271,6 +274,13 @@ M68KOBJS+= m68k_core.o m68k_core_x86.o
 TRANSOBJS+= gen_x86.o backend_x86.o
 endif
 endif
+endif
+
+ifdef NEW_Z80
+Z80OBJS=z80.o z80inst.o
+CFLAGS+= -DNEW_Z80
+else
+Z80OBJS=z80inst.o z80_to_x86.o
 endif
 AUDIOOBJS=ym2612.o ymf262.o ym_common.o psg.o wave.o flac.o vgm.o event_log.o render_audio.o rf5c164.o
 CONFIGOBJS=config.o tern.o util.o paths.o

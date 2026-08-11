@@ -10,7 +10,7 @@
 #include "bindings.h"
 #include "saves.h"
 
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 #define Z80_CYCLE cycles
 #define Z80_OPTS opts
 #define z80_handle_code_write(...)
@@ -42,7 +42,7 @@ static uint8_t coleco_controller_read(uint32_t location, void *vcontext)
 
 static void update_interrupts(coleco_context *coleco)
 {
-#ifdef NEW_CORE
+#ifdef NEW_Z80
 	if (coleco->z80->nmi_cycle == CYCLE_NEVER) {
 #else
 	if (coleco->z80->nmi_start == CYCLE_NEVER) {
@@ -203,7 +203,7 @@ static uint8_t load_state(system_header *system, uint8_t slot)
 	coleco_context *coleco = (coleco_context *)system;
 	char *statepath = get_slot_name(system, slot, "state");
 	uint8_t ret;
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	if (!coleco->z80->native_pc) {
 		ret = get_modification_time(statepath) != 0;
 		if (ret) {
@@ -349,7 +349,7 @@ static void soft_reset(system_header *system)
 {
 	coleco_context *coleco = (coleco_context *)system;
 	z80_assert_reset(coleco->z80, coleco->z80->Z80_CYCLE);
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	coleco->z80->target_cycle = coleco->z80->sync_cycle = coleco->z80->Z80_CYCLE;
 #endif
 }
@@ -373,7 +373,7 @@ static void request_exit(system_header *system)
 {
 	coleco_context *coleco = (coleco_context *)system;
 	coleco->should_return = 1;
-#ifndef NEW_CORE
+#ifndef NEW_Z80
 	coleco->z80->target_cycle = coleco->z80->sync_cycle = coleco->z80->Z80_CYCLE;
 #endif
 }
