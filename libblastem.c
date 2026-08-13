@@ -623,6 +623,7 @@ static void apply_core_options(void)
 static vid_std video_standard;
 static uint32_t last_width, last_height;
 static uint8_t frame_presented;
+static void present_framebuffer(uint8_t which, int width);
 static uint32_t overscan_top, overscan_bot, overscan_left, overscan_right;
 static void override_overscan(const char *key, uint32_t *dst)
 {
@@ -724,11 +725,12 @@ RETRO_API void retro_run(void)
 		current_system->start_context(current_system, NULL);
 		started = 1;
 	}
-	//The media player has no video, so it returns without presenting anything.
-	//Hand the frontend the (blank) framebuffer anyway so it still gets one frame
-	//per call and its pacing and audio sync have something to run against.
+	//A system that returned without presenting anything still owes the frontend
+	//a frame, so that it gets one per call and its pacing and audio sync have
+	//something to run against. The media player never has video at all, and a
+	//Sega CD does not reach the end of a frame on the call that starts it.
 	if (!frame_presented) {
-		render_framebuffer_updated(render_get_active_framebuffer(), LINEBUF_SIZE);
+		present_framebuffer(render_get_active_framebuffer(), LINEBUF_SIZE);
 	}
 }
 
@@ -1092,7 +1094,11 @@ uint32_t *render_get_framebuffer(uint8_t which, int *pitch)
 	}
 }
 
-void render_framebuffer_updated(uint8_t which, int width)
+//Hands the frontend a frame. Separate from render_framebuffer_updated() because
+//the emulator asking to be let go is what ends a frame, and a frame this file
+//presents on its own behalf must not ask for that: the request would still be
+//standing on the next retro_run() and skip the emulation loop entirely.
+static void present_framebuffer(uint8_t which, int width)
 {
 	unsigned height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
 	width -= (overscan_left + overscan_right);
@@ -1113,6 +1119,11 @@ void render_framebuffer_updated(uint8_t which, int width)
 	}
 	retro_video_refresh(fb + overscan_left + LINEBUF_SIZE * overscan_top, width, height, LINEBUF_SIZE * sizeof(uint32_t));
 	frame_presented = 1;
+}
+
+void render_framebuffer_updated(uint8_t which, int width)
+{
+	present_framebuffer(which, width);
 	system_request_exit(current_system, 0);
 }
 
