@@ -531,6 +531,28 @@ RETRO_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t rasb)
 	retro_audio_sample_batch = rasb;
 }
 
+//mix_and_convert() mixes into a buffer sized from what render_audio_initialized()
+//was told, so a batch may be no larger than that.
+#define AUDIO_BATCH_FRAMES 512
+
+//Hands the frontend everything every source has ready. Asking for no more than
+//that is what keeps a source from being mixed past what it has written, which
+//would be heard as a gap.
+static void flush_audio(void)
+{
+	if (!retro_audio_sample_batch) {
+		return;
+	}
+	for (uint32_t remaining = audio_buffered(); remaining; )
+	{
+		uint32_t frames = remaining > AUDIO_BATCH_FRAMES ? AUDIO_BATCH_FRAMES : remaining;
+		int16_t buffer[AUDIO_BATCH_FRAMES * 2];
+		mix_and_convert((uint8_t *)buffer, frames * 2 * sizeof(int16_t), NULL);
+		retro_audio_sample_batch(buffer, frames);
+		remaining -= frames;
+	}
+}
+
 static retro_input_poll_t retro_input_poll;
 RETRO_API void retro_set_input_poll(retro_input_poll_t rip)
 {
@@ -557,7 +579,7 @@ const system_media *current_media(void)
 
 RETRO_API void retro_init(void)
 {
-	render_audio_initialized(RENDER_AUDIO_S16, 53693175 / (7 * 6 * 4), 2, 4, sizeof(int16_t));
+	render_audio_initialized(RENDER_AUDIO_S16, 53693175 / (7 * 6 * 4), 2, AUDIO_BATCH_FRAMES, sizeof(int16_t));
 }
 
 RETRO_API void retro_deinit(void)
@@ -676,7 +698,7 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
 	info->timing.fps = master_clock / (3420.0 * lines);
 	info->timing.sample_rate = master_clock / (7 * 6 * 24); //sample rate of YM2612
 	sample_rate = info->timing.sample_rate;
-	render_audio_initialized(RENDER_AUDIO_S16, info->timing.sample_rate, 2, 4, sizeof(int16_t));
+	render_audio_initialized(RENDER_AUDIO_S16, info->timing.sample_rate, 2, AUDIO_BATCH_FRAMES, sizeof(int16_t));
 	//force adjustment of resampling parameters since target sample rate may have changed slightly
 	current_system->set_speed_percent(current_system, 100);
 }
@@ -712,7 +734,7 @@ RETRO_API void retro_run(void)
 		//divider - is read while a machine is built and so waits for the next
 		//load.
 		if (sample_rate) {
-			render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, 4, sizeof(int16_t));
+			render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, AUDIO_BATCH_FRAMES, sizeof(int16_t));
 		}
 		if (current_system->config_updated) {
 			current_system->config_updated(current_system);
@@ -732,6 +754,7 @@ RETRO_API void retro_run(void)
 	if (!frame_presented) {
 		present_framebuffer(render_get_active_framebuffer(), LINEBUF_SIZE);
 	}
+	flush_audio();
 }
 
 /* Returns the amount of data the implementation requires to serialize
@@ -1181,9 +1204,13 @@ void process_events()
 
 uint8_t render_is_audio_sync(void)
 {
-	//whether this is true depends on the libretro frontend implementation
-	//but the sync to audio path works better here
-	return 1;
+	//A frame ends when the VDP hands over a framebuffer, so audio is not what
+	//paces emulation here and each source can keep its own ring buffer. That is
+	//the only arrangement that survives sources running at rates of their own:
+	//the Sega CD's CD-DA and PCM chip fill at their own pace, and in the sync
+	//path a source that filled twice before the others filled once had a whole
+	//buffer dropped on the floor.
+	return 0;
 }
 
 uint8_t render_should_release_on_exit(void)
@@ -1214,13 +1241,17 @@ void render_unlock_audio()
 
 uint32_t render_min_buffered(void)
 {
-	//not actually used in the sync to audio path
-	return 4;
+	//Sizes each source's ring: render_audio_source() rounds min_buffered * 4 *
+	//channels up to a power of two. This leaves room for around a tenth of a
+	//second, so a source that runs ahead of the others has somewhere to put it.
+	return 2048;
 }
 
 uint32_t render_audio_syncs_per_sec(void)
 {
-	return 0;
+	//How often a source publishes what it has written. Often enough that a
+	//frame's worth arrives in pieces rather than all at once.
+	return 1000;
 }
 
 void render_audio_created(audio_source *src)
@@ -1229,17 +1260,8 @@ void render_audio_created(audio_source *src)
 
 void render_do_audio_ready(audio_source *src)
 {
-	int16_t *tmp = src->front;
-	src->front = src->back;
-	src->back = tmp;
-	src->front_populated = 1;
-	src->buffer_pos = 0;
-	if (all_sources_ready()) {
-		int16_t buffer[8];
-		int min_remaining_out;
-		mix_and_convert((uint8_t *)buffer, sizeof(buffer), &min_remaining_out);
-		retro_audio_sample_batch(buffer, sizeof(buffer)/(2*sizeof(*buffer)));
-	}
+	//Publish what has been written; the mixing happens once the frame is done
+	src->read_end = src->buffer_pos;
 }
 
 void render_source_paused(audio_source *src, uint8_t remaining_sources)
