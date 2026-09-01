@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <errno.h>
 #endif
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 #include <SDL_system.h>
 #include <jni.h>
 #endif
@@ -45,7 +45,7 @@ static void persist_path(void)
 	free(pathfname);
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 static char *get_external_storage_path()
 {
 	static char *ret;
@@ -82,7 +82,7 @@ cleanup:
 uint8_t get_initial_browse_path(char **dst)
 {
 	char *base = NULL;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 	static const char activity_class_name[] = "com/retrodev/blastem/BlastEmActivity";
 	static const char get_rom_path_name[] = "getRomPath";
 	JNIEnv *env = SDL_AndroidGetJNIEnv();
@@ -143,7 +143,7 @@ uint8_t get_initial_browse_path(char **dst)
 	}
 #endif
 	if (!base){
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 		
 		base = get_external_storage_path();
 #else
@@ -486,7 +486,7 @@ fallback:
 	return exe_dir;
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 #include <SDL.h>
 
 char const *get_config_dir()
