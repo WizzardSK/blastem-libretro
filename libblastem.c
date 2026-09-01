@@ -266,22 +266,23 @@ static const core_option core_options[] = {
 	},
 	{
 		"blastem_overscan_top", "Overscan Cropped, Top",
-		"Lines cropped off the top of the picture. Auto follows the frontend's own crop overscan setting.",
+		"Lines cropped off the top of the picture. Auto crops the region's overscan area, which in some games also "
+		"shaves a frame off the input lag: the picture is finished before the game reads the pad.",
 		"video", NULL, overscan_values
 	},
 	{
 		"blastem_overscan_bottom", "Overscan Cropped, Bottom",
-		"Lines cropped off the bottom of the picture. Auto follows the frontend's own crop overscan setting.",
+		"Lines cropped off the bottom of the picture. Auto crops the region's overscan area.",
 		"video", NULL, overscan_values
 	},
 	{
 		"blastem_overscan_left", "Overscan Cropped, Left",
-		"Columns cropped off the left of the picture. Auto follows the frontend's own crop overscan setting.",
+		"Columns cropped off the left of the picture. Auto crops the region's overscan area.",
 		"video", NULL, overscan_values
 	},
 	{
 		"blastem_overscan_right", "Overscan Cropped, Right",
-		"Columns cropped off the right of the picture. Auto follows the frontend's own crop overscan setting.",
+		"Columns cropped off the right of the picture. Auto crops the region's overscan area.",
 		"video", NULL, overscan_values
 	}
 };
@@ -632,25 +633,22 @@ static void override_overscan(const char *key, uint32_t *dst)
 	}
 }
 
+//What "Auto" crops: the borders a TV of the region would have hidden anyway.
+//RETRO_ENVIRONMENT_GET_OVERSCAN, which used to decide this, is deprecated and a
+//frontend may stop answering it at all, so the core no longer asks - the option
+//alone says what to crop, and 0 turns cropping off.
 static void update_overscan(void)
 {
-	uint8_t overscan;
-	retro_environment(RETRO_ENVIRONMENT_GET_OVERSCAN, &overscan);
-	if (overscan) {
-		overscan_top = overscan_bot = overscan_left = overscan_right = 0;
+	if (video_standard == VID_NTSC) {
+		overscan_top = 11;
+		overscan_bot = 8;
 	} else {
-		if (video_standard == VID_NTSC) {
-			overscan_top = 11;
-			overscan_bot = 8;
-			overscan_left = 13;
-			overscan_right = 14;
-		} else {
-			overscan_top = 30;
-			overscan_bot = 24;
-			overscan_left = 13;
-			overscan_right = 14;
-		}
+		overscan_top = 30;
+		overscan_bot = 24;
 	}
+	overscan_left = 13;
+	overscan_right = 14;
+
 	//Unlike the rest, cropping is this file's own doing rather than something the
 	//emulator reads out of the config tree, so it can follow the option as soon
 	//as it changes.
