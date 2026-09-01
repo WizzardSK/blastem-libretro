@@ -355,7 +355,10 @@ SH2DISOBJS:=sh2dis.o sh2_decode.o disasm.o tern.o util.o backend.o
 
 #zlib is left enabled here: LIBOBJS already links $(LIBZOBJS), so this costs no
 #extra objects and makes romopen() a gzopen() that transparently handles gzip
-LIBCFLAGS=$(CFLAGS) -fpic -DIS_LIB -DDISABLE_NUKLEAR
+#-fPIC rather than -fpic: MIPS runs out of GOT addressing range with the small
+#model, and with LTO the link step recompiles, so the flag has to be on the link
+#line too or the relocations come back as R_MIPS_HI16 against __gnu_local_gp.
+LIBCFLAGS=$(CFLAGS) -fPIC -DIS_LIB -DDISABLE_NUKLEAR
 
 all : $(ALL)
 
@@ -409,7 +412,7 @@ $(LIBOBJDIR) :
 	mkdir -p $(LIBOBJDIR)/lzma
 
 libblastem.$(SO) : $(LIBOBJS:%.o=$(LIBOBJDIR)/%.o)
-	$(CC) -shared -o $@ $^ $(LDFLAGS)
+	$(CC) -shared -fPIC -o $@ $^ $(LDFLAGS)
 
 blastem$(EXE) : $(MAINOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(LDFLAGS) $(PROFFLAGS)
