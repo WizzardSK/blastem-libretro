@@ -1,0 +1,73 @@
+name: preflight platforms
+on:
+  push:
+    branches:
+      - preflight-*
+  workflow_dispatch:
+
+jobs:
+  osx-arm64:
+    runs-on: macos-14
+    env:
+      platform: osx
+      arch: arm
+      CC: clang
+      CXX: clang++
+      CROSS_COMPILE: 1
+      LIBRETRO_APPLE_PLATFORM: arm64-apple-macos10.15
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          export LIBRETRO_APPLE_ISYSROOT=$(xcodebuild -version -sdk macosx Path)
+          make -f Makefile.libretro -j$(sysctl -n hw.ncpu)
+      - name: inspect
+        run: |
+          ls -l blastem_libretro.dylib
+          lipo -info blastem_libretro.dylib
+          test -n "$(lipo -info blastem_libretro.dylib | grep arm64)"
+
+  linux-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: armhf
+            pkg: gcc-arm-linux-gnueabihf
+            cc: arm-linux-gnueabihf-gcc
+          - name: mipsel
+            pkg: gcc-mipsel-linux-gnu
+            cc: mipsel-linux-gnu-gcc
+          - name: aarch64
+            pkg: gcc-aarch64-linux-gnu
+            cc: aarch64-linux-gnu-gcc
+    name: linux-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkg }}
+      - name: build
+        run: make -f Makefile.libretro CC=${{ matrix.cc }} -j$(nproc)
+      - name: inspect
+        run: |
+          ls -l blastem_libretro.so
+          file blastem_libretro.so
+
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [android-arm, android-arm64, android-x86, android-x86_64]
+    name: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          export ANDROID_NDK_LLVM="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+          make -f Makefile.libretro platform=${{ matrix.platform }} -j$(nproc)
+      - name: inspect
+        run: |
+          ls -l blastem_libretro_android.so
+          file blastem_libretro_android.so
