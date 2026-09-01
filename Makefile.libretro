@@ -27,7 +27,19 @@ else ifneq ($(findstring Darwin,$(UNAME)),)
 	platform = osx
 	OS :=Darwin
 	CC ?=gcc
+#Apple Silicon: the JIT is x86-only, so an arm64 build has to come out as
+#CPU=aarch64, which is what selects the generated 68K/Z80 cores. The buildbot
+#names the architecture in LIBRETRO_APPLE_PLATFORM (arm64-apple-macos10.15);
+#outside CI there is nothing to name it but the machine the build runs on.
+ifneq (,$(findstring arm64,$(LIBRETRO_APPLE_PLATFORM)))
+	ABI := aarch64
+else ifneq (,$(findstring x86_64,$(LIBRETRO_APPLE_PLATFORM)))
 	ABI := x86_64
+else ifneq (,$(filter arm64 aarch64,$(UNAMEM)))
+	ABI := aarch64
+else
+	ABI := x86_64
+endif
 	target = libblastem.dylib
 	libname = blastem_libretro.dylib
 else ifneq ($(findstring Haiku,$(UNAME)),)
