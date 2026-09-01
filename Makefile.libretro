@@ -58,8 +58,25 @@ else
 	platform = linux
 	OS :=Linux
 	CC ?=gcc
+#A cross build (webOS, dingux, miyoo, ...) runs on an x86_64 host with a cross
+#compiler, so the CPU to build for is the one the compiler targets rather than
+#the one uname reports. Everything that is not x86 picks the generated 68K/Z80
+#cores, which is what makes those targets buildable at all.
+	CC_MACHINE := $(shell $(CC) -dumpmachine 2>/dev/null)
 ifeq ($(ARCH),x86)
 	ABI := i686
+else ifneq (,$(findstring aarch64,$(CC_MACHINE)))
+	ABI := aarch64
+else ifneq (,$(findstring arm,$(CC_MACHINE)))
+	ABI := arm
+else ifneq (,$(findstring mips,$(CC_MACHINE)))
+	ABI := mips
+else ifneq (,$(findstring i686,$(CC_MACHINE)))
+	ABI := i686
+else ifneq (,$(findstring i386,$(CC_MACHINE)))
+	ABI := i686
+else ifneq (,$(findstring x86_64,$(CC_MACHINE)))
+	ABI := x86_64
 else ifneq (,$(filter aarch64 arm64,$(UNAMEM)))
 	ABI := aarch64
 else
