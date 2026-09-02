@@ -770,7 +770,8 @@ RETRO_API bool retro_serialize(void *data, size_t size)
 {
 	size_t *buffer = data;
 	uint8_t *tmp = current_system->serialize(current_system, buffer);
-	if (*buffer > size) {
+	//the length itself goes in front of the state, so it has to fit as well
+	if (*buffer + sizeof(size_t) > size) {
 		fprintf(stderr, "retro_serialize failed frontend size %d, actual size %d\n", (int)size, (int)*buffer);
 		free(tmp);
 		return 0;
