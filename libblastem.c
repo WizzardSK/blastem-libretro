@@ -697,6 +697,7 @@ RETRO_API void retro_reset(void)
  * In this case, the video callback can take a NULL argument for data.
  */
 static uint8_t started;
+static void poll_input(void);
 RETRO_API void retro_run(void)
 {
 	bool options_updated = false;
@@ -715,6 +716,8 @@ RETRO_API void retro_run(void)
 			current_system->config_updated(current_system);
 		}
 	}
+	//once per frame, before the machine that will read it runs
+	poll_input();
 	frame_presented = 0;
 	if (started) {
 		current_system->resume_context(current_system);
@@ -1139,7 +1142,20 @@ uint32_t render_overscan_bot()
 	return overscan_bot;
 }
 
-void process_events()
+//Sampled once per frame from retro_run(). The standalone instead polls part way
+//through a frame, from io_data_read(), whenever the game reads a pad and
+//io_port::last_poll_cycle says the previous poll is old enough. That cannot work
+//here: the frontend hands the core one input snapshot per retro_run() and
+//expects the frame it gets back to depend on nothing but that snapshot and the
+//machine state, because run-ahead, preemptive frames, rewind and netplay all
+//replay frames from a save state. last_poll_cycle is not in a save state, so
+//after a rollback it still holds a cycle count from the frame that was thrown
+//away and the game's own pad read gets skipped as "too recent". Run-ahead lands
+//squarely on that case - the read in the replayed frame falls on the very cycle
+//the discarded frame polled at - so the core would only ever poll during the
+//frames the frontend feeds it stale input with, and the player's presses would
+//never arrive.
+static void poll_input(void)
 {
 	static int16_t prev_state[2][RETRO_DEVICE_ID_JOYPAD_L2];
 	static const uint8_t map[] = {
@@ -1164,6 +1180,11 @@ void process_events()
 			}
 		}
 	}
+}
+
+void process_events()
+{
+	//input is sampled in retro_run(), see poll_input()
 }
 
 uint8_t render_is_audio_sync(void)
