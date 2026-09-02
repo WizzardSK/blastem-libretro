@@ -455,8 +455,14 @@ sh2dis$(EXE) : $(SH2DISOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(OPT)
 
 .PRECIOUS: %.c
+#The generated cores make a Python interpreter a hard build requirement, and on
+#anything without an x86 JIT there is no building around it. Naming the
+#interpreter here rather than leaning on the shebang keeps the failure legible
+#when it is missing and lets a host where it goes by another name or lives
+#outside PATH say so with PYTHON=.
+PYTHON ?= python3
 %.c %.h : %.cpu cpu_dsl.py
-	./cpu_dsl.py -d $(shell echo $@ | sed -E -e "s/^z80.*$$/$(Z80_DISPATCH)/" -e '/^goto/! s/^.*$$/call/') $< > $(shell echo $@ | sed -E 's/\.[ch]$$/./')c
+	$(PYTHON) ./cpu_dsl.py -d $(shell echo $@ | sed -E -e "s/^z80.*$$/$(Z80_DISPATCH)/" -e '/^goto/! s/^.*$$/call/') $< > $(shell echo $@ | sed -E 's/\.[ch]$$/./')c
 
 %.db.c : %.db
 	sed -e 's/"/\\"/g' -e 's/^\(.*\)$$/"\1\\n"/' -e'1s/^\(.*\)$$/const char $(shell echo $< | tr '.' '_')_data[] = \1/' -e '$$s/^\(.*\)$$/\1;/' $< > $@
