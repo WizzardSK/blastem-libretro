@@ -659,23 +659,36 @@ static void update_overscan(void)
 }
 
 static int32_t sample_rate;
-RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+static struct retro_system_av_info av_info;
+//Worked out when the machine is built rather than when the frontend asks for it:
+//run-ahead's second instance is created with retro_init(), retro_load_game() and
+//the callbacks alone, and is never asked for AV info at all. An instance that
+//waited to be asked would keep overscan_* at zero, present the uncropped 347x243
+//picture the cropped one is meant to replace, and never hand render_audio a
+//sample rate - and in that mode it is the second instance's frames that reach
+//the screen.
+static void update_av_info(void)
 {
 	update_overscan();
 	last_width = LINEBUF_SIZE;
-	info->geometry.base_width = info->geometry.max_width = LINEBUF_SIZE - (overscan_left + overscan_right);
-	info->geometry.base_height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
-	last_height = info->geometry.base_height;
-	info->geometry.max_height = info->geometry.base_height * 2;
-	info->geometry.aspect_ratio = 0;
+	av_info.geometry.base_width = av_info.geometry.max_width = LINEBUF_SIZE - (overscan_left + overscan_right);
+	av_info.geometry.base_height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
+	last_height = av_info.geometry.base_height;
+	av_info.geometry.max_height = av_info.geometry.base_height * 2;
+	av_info.geometry.aspect_ratio = 0;
 	double master_clock = video_standard == VID_NTSC ? 53693175 : 53203395;
 	double lines = video_standard == VID_NTSC ? 262 : 313;
-	info->timing.fps = master_clock / (3420.0 * lines);
-	info->timing.sample_rate = master_clock / (7 * 6 * 24); //sample rate of YM2612
-	sample_rate = info->timing.sample_rate;
-	render_audio_initialized(RENDER_AUDIO_S16, info->timing.sample_rate, 2, 4, sizeof(int16_t));
+	av_info.timing.fps = master_clock / (3420.0 * lines);
+	av_info.timing.sample_rate = master_clock / (7 * 6 * 24); //sample rate of YM2612
+	sample_rate = av_info.timing.sample_rate;
+	render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, 4, sizeof(int16_t));
 	//force adjustment of resampling parameters since target sample rate may have changed slightly
 	current_system->set_speed_percent(current_system, 100);
+}
+
+RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+	*info = av_info;
 }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -703,15 +716,12 @@ RETRO_API void retro_run(void)
 	bool options_updated = false;
 	if (retro_environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &options_updated) && options_updated) {
 		apply_core_options();
-		update_overscan();
 		//Gains, the DAC and what is in the controller ports are re-read from the
 		//config tree on demand, the same way the standalone picks up a change in
 		//its settings menu. Everything else - the model, the region, the clock
 		//divider - is read while a machine is built and so waits for the next
 		//load.
-		if (sample_rate) {
-			render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, 4, sizeof(int16_t));
-		}
+		update_av_info();
 		if (current_system->config_updated) {
 			current_system->config_updated(current_system);
 		}
@@ -970,6 +980,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
 	unsigned format = RETRO_PIXEL_FORMAT_XRGB8888;
 	retro_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
+
+	update_av_info();
 
 	return 1;
 }
