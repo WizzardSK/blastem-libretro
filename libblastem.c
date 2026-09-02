@@ -659,23 +659,36 @@ static void update_overscan(void)
 }
 
 static int32_t sample_rate;
-RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+static struct retro_system_av_info av_info;
+//Worked out when the machine is built rather than when the frontend asks for it:
+//run-ahead's second instance is created with retro_init(), retro_load_game() and
+//the callbacks alone, and is never asked for AV info at all. An instance that
+//waited to be asked would keep overscan_* at zero, present the uncropped 347x243
+//picture the cropped one is meant to replace, and never hand render_audio a
+//sample rate - and in that mode it is the second instance's frames that reach
+//the screen.
+static void update_av_info(void)
 {
 	update_overscan();
 	last_width = LINEBUF_SIZE;
-	info->geometry.base_width = info->geometry.max_width = LINEBUF_SIZE - (overscan_left + overscan_right);
-	info->geometry.base_height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
-	last_height = info->geometry.base_height;
-	info->geometry.max_height = info->geometry.base_height * 2;
-	info->geometry.aspect_ratio = 0;
+	av_info.geometry.base_width = av_info.geometry.max_width = LINEBUF_SIZE - (overscan_left + overscan_right);
+	av_info.geometry.base_height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
+	last_height = av_info.geometry.base_height;
+	av_info.geometry.max_height = av_info.geometry.base_height * 2;
+	av_info.geometry.aspect_ratio = 0;
 	double master_clock = video_standard == VID_NTSC ? 53693175 : 53203395;
 	double lines = video_standard == VID_NTSC ? 262 : 313;
-	info->timing.fps = master_clock / (3420.0 * lines);
-	info->timing.sample_rate = master_clock / (7 * 6 * 24); //sample rate of YM2612
-	sample_rate = info->timing.sample_rate;
-	render_audio_initialized(RENDER_AUDIO_S16, info->timing.sample_rate, 2, 4, sizeof(int16_t));
+	av_info.timing.fps = master_clock / (3420.0 * lines);
+	av_info.timing.sample_rate = master_clock / (7 * 6 * 24); //sample rate of YM2612
+	sample_rate = av_info.timing.sample_rate;
+	render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, 4, sizeof(int16_t));
 	//force adjustment of resampling parameters since target sample rate may have changed slightly
 	current_system->set_speed_percent(current_system, 100);
+}
+
+RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+	*info = av_info;
 }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -697,24 +710,24 @@ RETRO_API void retro_reset(void)
  * In this case, the video callback can take a NULL argument for data.
  */
 static uint8_t started;
+static void poll_input(void);
 RETRO_API void retro_run(void)
 {
 	bool options_updated = false;
 	if (retro_environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &options_updated) && options_updated) {
 		apply_core_options();
-		update_overscan();
 		//Gains, the DAC and what is in the controller ports are re-read from the
 		//config tree on demand, the same way the standalone picks up a change in
 		//its settings menu. Everything else - the model, the region, the clock
 		//divider - is read while a machine is built and so waits for the next
 		//load.
-		if (sample_rate) {
-			render_audio_initialized(RENDER_AUDIO_S16, sample_rate, 2, 4, sizeof(int16_t));
-		}
+		update_av_info();
 		if (current_system->config_updated) {
 			current_system->config_updated(current_system);
 		}
 	}
+	//once per frame, before the machine that will read it runs
+	poll_input();
 	frame_presented = 0;
 	if (started) {
 		current_system->resume_context(current_system);
@@ -757,7 +770,8 @@ RETRO_API bool retro_serialize(void *data, size_t size)
 {
 	size_t *buffer = data;
 	uint8_t *tmp = current_system->serialize(current_system, buffer);
-	if (*buffer > size) {
+	//the length itself goes in front of the state, so it has to fit as well
+	if (*buffer + sizeof(size_t) > size) {
 		fprintf(stderr, "retro_serialize failed frontend size %d, actual size %d\n", (int)size, (int)*buffer);
 		free(tmp);
 		return 0;
@@ -968,6 +982,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 	unsigned format = RETRO_PIXEL_FORMAT_XRGB8888;
 	retro_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
 
+	update_av_info();
+
 	return 1;
 }
 
@@ -1139,7 +1155,20 @@ uint32_t render_overscan_bot()
 	return overscan_bot;
 }
 
-void process_events()
+//Sampled once per frame from retro_run(). The standalone instead polls part way
+//through a frame, from io_data_read(), whenever the game reads a pad and
+//io_port::last_poll_cycle says the previous poll is old enough. That cannot work
+//here: the frontend hands the core one input snapshot per retro_run() and
+//expects the frame it gets back to depend on nothing but that snapshot and the
+//machine state, because run-ahead, preemptive frames, rewind and netplay all
+//replay frames from a save state. last_poll_cycle is not in a save state, so
+//after a rollback it still holds a cycle count from the frame that was thrown
+//away and the game's own pad read gets skipped as "too recent". Run-ahead lands
+//squarely on that case - the read in the replayed frame falls on the very cycle
+//the discarded frame polled at - so the core would only ever poll during the
+//frames the frontend feeds it stale input with, and the player's presses would
+//never arrive.
+static void poll_input(void)
 {
 	static int16_t prev_state[2][RETRO_DEVICE_ID_JOYPAD_L2];
 	static const uint8_t map[] = {
@@ -1164,6 +1193,11 @@ void process_events()
 			}
 		}
 	}
+}
+
+void process_events()
+{
+	//input is sampled in retro_run(), see poll_input()
 }
 
 uint8_t render_is_audio_sync(void)
