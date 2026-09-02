@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 #include <android/log.h>
 #include <SDL_system.h>
 #include <jni.h>
@@ -901,7 +901,7 @@ char *fgets_timeout(char *dst, size_t size, FILE *f, uint64_t timeout_usec, void
 
 #include <dirent.h>
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 static dir_entry *jdir_list_helper(JNIEnv *env, jmethodID meth, char *path, size_t *numret)
 {
 	jstring jpath = (*env)->NewStringUTF(env, path);
@@ -940,7 +940,7 @@ static dir_entry *jdir_list_helper(JNIEnv *env, jmethodID meth, char *path, size
 
 dir_entry *get_dir_list(char *path, size_t *numret)
 {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 	debug_message("get_dir_list(%s)\n", path);
 	if (startswith(path, "content://")) {
 		static const char activity_class_name[] = "com/retrodev/blastem/BlastEmActivity";

@@ -32,7 +32,10 @@
 #define gzdirect vfs_fdirect
 #elif defined(DISABLE_ZLIB)
 #define ROMFILE FILE*
-#ifdef __ANDROID__
+//The Storage Access Framework wrappers belong to the standalone Android app -
+//they call into its activity through JNI. A libretro core gets its paths from
+//the frontend, so it takes the plain calls, the same way util.c does.
+#if defined(__ANDROID__) && !defined(IS_LIB)
 #define romopen fopen_wrapper
 #else
 #define romopen fopen
@@ -44,7 +47,7 @@
 #else
 #include "zlib/zlib.h"
 #define ROMFILE gzFile
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 #define romopen gzopen_wrapper
 gzFile gzopen_wrapper(const char *path, const char *mode);
 #else
@@ -563,7 +566,7 @@ end:
 
 #ifndef DISABLE_ZLIB
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 gzFile gzopen_wrapper(const char *path, const char *mode)
 {
 	if (startswith(path, "content://")) {

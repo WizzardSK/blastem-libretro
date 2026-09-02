@@ -9,6 +9,30 @@ ifeq ($(platform), emscripten)
 	ABI := x86_64
 	target = libblastem.so
 	libname = blastem_libretro_emscripten.bc
+else ifneq (,$(findstring android,$(platform)))
+#Android, built the way libretro-infrastructure's android-make jobs drive it:
+#plain make with an NDK clang, one ABI per invocation. The 68K and Z80 JITs
+#want RWX memory, which is not something to count on under Android, so these
+#builds take the generated cores on every ABI - the same ones aarch64 gets.
+	OS :=Linux
+	ANDROID_API ?= 21
+	NDK_LLVM ?= $(ANDROID_NDK_LLVM)
+ifeq ($(platform),android-arm64)
+	ABI := aarch64
+	CC = $(NDK_LLVM)/bin/aarch64-linux-android$(ANDROID_API)-clang
+else ifeq ($(platform),android-x86_64)
+	ABI := x86_64
+	CC = $(NDK_LLVM)/bin/x86_64-linux-android$(ANDROID_API)-clang
+else ifeq ($(platform),android-x86)
+	ABI := i686
+	CC = $(NDK_LLVM)/bin/i686-linux-android$(ANDROID_API)-clang
+else
+	ABI := arm
+	CC = $(NDK_LLVM)/bin/armv7a-linux-androideabi$(ANDROID_API)-clang
+endif
+	CORE_ARGS := NEW_CORE=1
+	target = libblastem.so
+	libname = blastem_libretro_android.so
 else ifeq ($(MSYSTEM),MINGW64)
 	platform = win
 	OS :=Windows
@@ -58,8 +82,25 @@ else
 	platform = linux
 	OS :=Linux
 	CC ?=gcc
+#A cross build (webOS, dingux, miyoo, ...) runs on an x86_64 host with a cross
+#compiler, so the CPU to build for is the one the compiler targets rather than
+#the one uname reports. Everything that is not x86 picks the generated 68K/Z80
+#cores, which is what makes those targets buildable at all.
+	CC_MACHINE := $(shell $(CC) -dumpmachine 2>/dev/null)
 ifeq ($(ARCH),x86)
 	ABI := i686
+else ifneq (,$(findstring aarch64,$(CC_MACHINE)))
+	ABI := aarch64
+else ifneq (,$(findstring arm,$(CC_MACHINE)))
+	ABI := arm
+else ifneq (,$(findstring mips,$(CC_MACHINE)))
+	ABI := mips
+else ifneq (,$(findstring i686,$(CC_MACHINE)))
+	ABI := i686
+else ifneq (,$(findstring i386,$(CC_MACHINE)))
+	ABI := i686
+else ifneq (,$(findstring x86_64,$(CC_MACHINE)))
+	ABI := x86_64
 else ifneq (,$(filter aarch64 arm64,$(UNAMEM)))
 	ABI := aarch64
 else
@@ -77,7 +118,7 @@ ifneq (,$(or $(findstring webos,$(CROSS_COMPILE)),$(findstring starfish,$(CROSS_
 endif
 
 core: $(OBJ)
-	$(MAKE) $(target) OS=$(OS) CC=$(CC) CPU=$(ABI) LIBRETRO=$(LIBRETRO)
+	$(MAKE) $(target) OS=$(OS) CC=$(CC) CPU=$(ABI) LIBRETRO=$(LIBRETRO) $(CORE_ARGS)
 	cp -v $(target) $(libname)
 
 install: $(libname)

@@ -42,10 +42,24 @@ include:
     file: '/osx-arm64.yml'
 
   ################################## CELLULAR ################################
-  #
+  # Android
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/android-make.yml'
+
   ################################## CONSOLES ################################
   #
   #################################### MISC ##################################
+  # webOS
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/webos-make.yml'
+
+  # Dingux/OpenDingux (MIPS32)
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/dingux-mips32.yml'
+
+  # Miyoo (ARM32)
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/dingux-arm32.yml'
 
 # Stages for building
 stages:
@@ -98,4 +112,72 @@ libretro-build-osx-x64:
 libretro-build-osx-arm64:
   extends:
     - .libretro-osx-arm64-make-default
+    - .core-defs
+
+################################### CELLULAR #################################
+# Android ARMv7a
+android-armeabi-v7a:
+  extends:
+    - .libretro-android-make-armeabi-v7a
+    - .core-defs
+
+# Android ARMv8a
+android-arm64-v8a:
+  extends:
+    - .libretro-android-make-arm64-v8a
+    - .core-defs
+
+# Android 32-bit x86
+android-x86:
+  extends:
+    - .libretro-android-make-x86
+    - .core-defs
+
+# Android 64-bit x86
+android-x86_64:
+  extends:
+    - .libretro-android-make-x86_64
+    - .core-defs
+
+##################################### MISC ###################################
+# webOS ARMv7a
+libretro-build-webos-armv7a:
+  extends:
+    - .libretro-webos-armv7a-make-default
+    - .core-defs
+
+# webOS aarch64
+libretro-build-webos-aarch64:
+  extends:
+    - .libretro-webos-aarch64-make-default
+    - .core-defs
+
+# Dingux (MIPS32)
+libretro-build-dingux-mips32:
+  extends:
+    - .libretro-dingux-mips32-make-default
+    - .core-defs
+
+# OpenDingux beta (MIPS32)
+libretro-build-dingux-odbeta-mips32:
+  extends:
+    - .libretro-dingux-odbeta-mips32-make-default
+    - .core-defs
+
+# RS-90 OpenDingux beta (MIPS32)
+libretro-build-rs90-odbeta-mips32:
+  extends:
+    - .libretro-rs90-odbeta-mips32-make-default
+    - .core-defs
+
+# RetroFW (MIPS32)
+libretro-build-retrofw-mips32:
+  extends:
+    - .libretro-retrofw-mips32-make-default
+    - .core-defs
+
+# Miyoo (ARM32)
+libretro-build-miyoo-arm32:
+  extends:
+    - .libretro-miyoo-arm32-make-default
     - .core-defs

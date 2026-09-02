@@ -30,7 +30,7 @@ typedef vfs_file media_file;
 #else
 
 typedef FILE media_file;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(IS_LIB)
 FILE* fopen_wrapper(const char *path, const char *mode);
 #define media_fopen fopen_wrapper
 #else
