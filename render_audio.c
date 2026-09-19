@@ -166,6 +166,32 @@ int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out)
 	return min_buffered;
 }
 
+//How much audio there is to hand over, for a backend that pulls whatever is
+//there rather than waiting for a fixed buffer to fill. Only meaningful when
+//audio is not the sync source, since that is when read_end follows what has
+//been written.
+//
+//What every source that has anything to say can cover. Mixing past that would
+//take a source further than it has been written, which is heard as a gap, so
+//whatever is left stays queued for the next time.
+//
+//A source with nothing at all is a different matter: a CD-DA track that is not
+//playing and a PCM chip a game never touches write nothing, ever, and waiting
+//on them would mean waiting forever. Those mix as the silence they are.
+uint32_t audio_buffered(void)
+{
+	uint32_t least_buffered = 0xFFFFFFFFU;
+	for (uint8_t i = 0; i < num_audio_sources; i++)
+	{
+		audio_source *src = audio_sources[i];
+		uint32_t buffered = ((src->read_end - src->read_start) & src->mask) / src->num_channels;
+		if (buffered && buffered < least_buffered) {
+			least_buffered = buffered;
+		}
+	}
+	return least_buffered == 0xFFFFFFFFU ? 0 : least_buffered;
+}
+
 uint8_t all_sources_ready(void)
 {
 	uint8_t num_populated = 0;
@@ -353,6 +379,7 @@ static void interp_sample(audio_source *src, int16_t last, int16_t current)
 }
 
 static uint32_t sync_samples;
+
 void render_put_mono_sample(audio_source *src, int16_t value)
 {
 	value = lowpass_sample(src, src->last_left, value);
