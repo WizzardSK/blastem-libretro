@@ -293,6 +293,10 @@ uint32_t load_media(char * filename, system_media *dst, system_type *stype)
 		} while (read > 0);
 		dst->buffer = buf;
 		ret = (uint32_t)readsize;
+		// Only this path still has the file open: load_smd_rom() above closes
+		// it itself, and closing it again below was a second close of the same
+		// handle for every .smd ROM. Upstream d22b34e78040.
+		romclose(f);
 	}
 	dst->dir = path_dirname(filename);
 	if (!dst->dir) {
@@ -301,7 +305,6 @@ uint32_t load_media(char * filename, system_media *dst, system_type *stype)
 	dst->name = basename_no_extension(filename);
 	dst->extension = ext;
 	dst->size = ret;
-	romclose(f);
 	if (!strcasecmp(dst->extension, "cue")) {
 		if (parse_cue(dst)) {
 			ret = dst->size;
