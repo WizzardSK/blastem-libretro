@@ -183,7 +183,7 @@ static const core_option core_options[] = {
 	},
 	{
 		"blastem_model", "Mega Drive Model",
-		"Which revision of the console to emulate. Models from the Mega Drive 2 on have TMSS, which needs a TMSS ROM named tmss.md in the system directory.",
+		"Which revision of the console to emulate. Models from the Mega Drive 2 on have TMSS, which shows the licensed-by-Sega screen at boot and needs the TMSS ROM in the system directory, named tmss.md or bios_MD.bin.",
 		"system", "system\0model\0", model_values
 	},
 	{
@@ -512,7 +512,21 @@ RETRO_API void retro_set_environment(retro_environment_t re)
 		//which looks next to the standalone binary and finds nothing in a libretro build.
 		config = tern_insert_path(config, "system\0laseractive_upd_rom\0", (tern_val){.ptrval = alloc_concat(system_dir, "/laseractive_dyw_1322a.bin")}, TVAL_PTR);
 		//Same story for the TMSS ROM every model from the Mega Drive 2 on needs.
-		config = tern_insert_path(config, "system\0tmss_path\0", (tern_val){.ptrval = alloc_concat(system_dir, "/tmss.md")}, TVAL_PTR);
+		//Genesis Plus GX reads the same ROM as bios_MD.bin, which is the name it
+		//is most likely to have in a RetroArch system directory already.
+		char *tmss = alloc_concat(system_dir, "/tmss.md");
+		char *gpgx_tmss = alloc_concat(system_dir, "/bios_MD.bin");
+		FILE *f;
+		if (!(f = fopen(tmss, "rb")) && (f = fopen(gpgx_tmss, "rb"))) {
+			free(tmss);
+			tmss = gpgx_tmss;
+		} else {
+			free(gpgx_tmss);
+		}
+		if (f) {
+			fclose(f);
+		}
+		config = tern_insert_path(config, "system\0tmss_path\0", (tern_val){.ptrval = tmss}, TVAL_PTR);
 	}
 }
 
@@ -578,8 +592,33 @@ const system_media *current_media(void)
 	return &media;
 }
 
+//Warnings and errors - a missing BIOS or TMSS ROM among them - otherwise went
+//to stderr only: not into the frontend's log, and not in front of the user,
+//for whom a load that failed for a missing file looked like the core doing
+//nothing at all (issue #69). The last one is kept for retro_load_game() to put
+//on screen if the load fails.
+static retro_log_printf_t retro_log;
+static char last_warning[256];
+static void lib_log_handler(log_level level, char *message)
+{
+	if (level < WARN) {
+		return;
+	}
+	snprintf(last_warning, sizeof(last_warning), "%s", message);
+	size_t len = strlen(last_warning);
+	while (len && (last_warning[len - 1] == '\n' || last_warning[len - 1] == '\r')) {
+		last_warning[--len] = 0;
+	}
+	if (retro_log) {
+		retro_log(level > WARN ? RETRO_LOG_ERROR : RETRO_LOG_WARN, "%s\n", last_warning);
+	}
+}
+
 RETRO_API void retro_init(void)
 {
+	struct retro_log_callback log_cb;
+	retro_log = retro_environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_cb) ? log_cb.log : NULL;
+	register_log_handler(lib_log_handler);
 	render_audio_initialized(RENDER_AUDIO_S16, 53693175 / (7 * 6 * 4), 2, AUDIO_BATCH_FRAMES, sizeof(int16_t));
 }
 
@@ -958,7 +997,22 @@ static void release_media(void)
 
 /* Loads a game. */
 static system_type stype;
+static bool load_game(const struct retro_game_info *game);
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
+{
+	last_warning[0] = 0;
+	if (load_game(game)) {
+		return 1;
+	}
+	//The frontend only says the content failed to load, or not even that; say why.
+	if (last_warning[0]) {
+		struct retro_message msg = { last_warning, 600 };
+		retro_environment(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+	}
+	return 0;
+}
+
+static bool load_game(const struct retro_game_info *game)
 {
 	serialize_size_cache = 0;
 	stype = SYSTEM_UNKNOWN;
