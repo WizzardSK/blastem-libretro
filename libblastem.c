@@ -682,6 +682,21 @@ static void update_overscan(void)
 }
 
 static int32_t sample_rate;
+//The shape of the picture on a TV. A frame's pixels are not square: the VDP
+//puts them out at its dot clock, the master clock over 8 in H40 and over 10 in
+//H32, while a square pixel is 135/11 MHz on a 525-line system and 14.75 MHz on
+//a 625-line one - both for 480 and 576 lines, and a 240p line is two of those
+//tall. That gives the familiar 32:35 (H40) and 8:7 (H32) for NTSC. Reporting 0
+//left the frontend to assume square pixels (issue #37), and the ratio that
+//replaced it on the first frame ignored the crop and the H32 mode.
+static float frame_aspect(unsigned width, unsigned height, uint8_t h40)
+{
+	double square_rate = video_standard == VID_NTSC ? 135.0 / 11.0 : 14.75;
+	double master_clock = video_standard == VID_NTSC ? 53.693175 : 53.203395;
+	double pixel_aspect = square_rate / (master_clock / (h40 ? 8 : 10)) / 2.0;
+	return (float)(width * pixel_aspect / height);
+}
+
 static struct retro_system_av_info av_info;
 //Worked out when the machine is built rather than when the frontend asks for it:
 //run-ahead's second instance is created with retro_init(), retro_load_game() and
@@ -698,7 +713,8 @@ static void update_av_info(void)
 	av_info.geometry.base_height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
 	last_height = av_info.geometry.base_height;
 	av_info.geometry.max_height = av_info.geometry.base_height * 2;
-	av_info.geometry.aspect_ratio = 0;
+	//Assumes H40 until the first frame says otherwise, as most games are.
+	av_info.geometry.aspect_ratio = frame_aspect(av_info.geometry.base_width, av_info.geometry.base_height, 1);
 	double master_clock = video_standard == VID_NTSC ? 53693175 : 53203395;
 	double lines = video_standard == VID_NTSC ? 262 : 313;
 	av_info.timing.fps = master_clock / (3420.0 * lines);
@@ -1140,6 +1156,7 @@ uint32_t *render_get_framebuffer(uint8_t which, int *pitch)
 static void present_framebuffer(uint8_t which, int width)
 {
 	unsigned height = (video_standard == VID_NTSC ? 243 : 294) - (overscan_top + overscan_bot);
+	uint8_t h40 = width == LINEBUF_SIZE;
 	width -= (overscan_left + overscan_right);
 	unsigned base_height = height;
 	if (which != last_fb) {
@@ -1150,7 +1167,7 @@ static void present_framebuffer(uint8_t which, int width)
 		struct retro_game_geometry geometry = {
 			.base_width = width,
 			.base_height = height,
-			.aspect_ratio = (float)LINEBUF_SIZE / base_height
+			.aspect_ratio = frame_aspect(width, base_height, h40)
 		};
 		retro_environment(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
 		last_width = width;
