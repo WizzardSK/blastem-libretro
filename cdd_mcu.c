@@ -357,7 +357,11 @@ static void update_status(cdd_mcu *context, uint16_t *gate_array)
 			break;
 		}
 		if (context->error_status == DS_STOP) {
-			if (context->requested_format >= SF_TOCO && context->requested_format <= SF_TOCN) {
+			if (context->status == DS_NO_DISC) {
+				//a drive with no disc answers a TOC request with no disc, rather
+				//than claiming to read a TOC that is never going to come
+				context->status_buffer.status = DS_NO_DISC;
+			} else if (context->requested_format >= SF_TOCO && context->requested_format <= SF_TOCN) {
 				context->status_buffer.status = DS_TOC_READ;
 			} else if (context->seeking && context->status != DS_TRACKING) {
 				context->status_buffer.status = DS_SEEK;
