@@ -82,10 +82,16 @@ static uint32_t calc_crop(uint32_t crop, uint32_t border)
 	return crop >= border ? 0 : border - crop;
 }
 
+//render_overscan_top/bot() as update_video_params() last saw them. Not in
+//vdp_context: there is only ever one VDP whose output is shown.
+static uint32_t applied_top_crop, applied_bot_crop;
+
 static void update_video_params(vdp_context *context)
 {
 	uint32_t top_crop = render_overscan_top();
 	uint32_t bot_crop = render_overscan_bot();
+	applied_top_crop = top_crop;
+	applied_bot_crop = bot_crop;
 	uint32_t border_top;
 	if (context->regs[REG_MODE_2] & BIT_MODE_5) {
 		if (context->regs[REG_MODE_2] & BIT_PAL) {
@@ -3108,6 +3114,15 @@ static void advance_output_line(vdp_context *context)
 		context->h40_lines = 0;
 		context->frame++;
 		context->output_lines = 0;
+		//The crop is otherwise only read when a mode register is written, so
+		//cropping less while a game runs - the libretro core's overscan options
+		//can be changed at any time - left the uncropped border lines undrawn,
+		//black instead of the backdrop and the CRAM dots in it, until the game
+		//happened to change modes. Between frames is the one safe place to pick
+		//it up.
+		if (applied_top_crop != render_overscan_top() || applied_bot_crop != render_overscan_bot()) {
+			update_video_params(context);
+		}
 	}
 
 	if (output_line < context->inactive_start + context->border_bot) {
