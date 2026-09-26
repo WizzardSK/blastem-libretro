@@ -550,6 +550,40 @@ RETRO_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t rasb)
 //was told, so a batch may be no larger than that.
 #define AUDIO_BATCH_FRAMES 512
 
+//The mix sits on a DC offset - a few hundred at silence, how much depends on
+//what the YM2612 and the PSG are left at - which the console's output
+//capacitors keep off the line. Handed to the frontend as it was, every moment
+//the frontend's audio stalls (the first seconds under a heavy shader, a
+//refresh rate switch with Sync to Content Refresh) dropped the output to zero
+//and brought it back to the offset: a pop each time (issue #17). A first
+//order high-pass at 5 Hz takes the offset off and leaves everything audible
+//alone. It starts from the first sample it sees, so starting the audio is not
+//a step either.
+#define DC_BLOCK_HZ 5.0
+static int32_t sample_rate;
+static float dc_last_in[2], dc_last_out[2];
+static uint8_t dc_primed;
+
+static void dc_block(int16_t *samples, uint32_t frames)
+{
+	const float r = 1.0f - (float)(2.0 * 3.14159265358979 * DC_BLOCK_HZ) / (float)sample_rate;
+	if (!dc_primed) {
+		dc_last_in[0] = samples[0];
+		dc_last_in[1] = samples[1];
+		dc_last_out[0] = dc_last_out[1] = 0.0f;
+		dc_primed = 1;
+	}
+	for (uint32_t i = 0; i < frames * 2; i++)
+	{
+		const int ch = i & 1;
+		const float in = samples[i];
+		const float out = in - dc_last_in[ch] + r * dc_last_out[ch];
+		dc_last_in[ch] = in;
+		dc_last_out[ch] = out;
+		samples[i] = out > 32767.0f ? 32767 : out < -32768.0f ? -32768 : (int16_t)out;
+	}
+}
+
 //Hands the frontend everything every source has ready. Asking for no more than
 //that is what keeps a source from being mixed past what it has written, which
 //would be heard as a gap.
@@ -563,6 +597,7 @@ static void flush_audio(void)
 		uint32_t frames = remaining > AUDIO_BATCH_FRAMES ? AUDIO_BATCH_FRAMES : remaining;
 		int16_t buffer[AUDIO_BATCH_FRAMES * 2];
 		mix_and_convert((uint8_t *)buffer, frames * 2 * sizeof(int16_t), NULL);
+		dc_block(buffer, frames);
 		retro_audio_sample_batch(buffer, frames);
 		remaining -= frames;
 	}
@@ -720,7 +755,6 @@ static void update_overscan(void)
 	override_overscan("blastem_overscan_right", &overscan_right);
 }
 
-static int32_t sample_rate;
 //The shape of the picture on a TV. A frame's pixels are not square: the VDP
 //puts them out at its dot clock, the master clock over 8 in H40 and over 10 in
 //H32, while a square pixel is 135/11 MHz on a 525-line system and 14.75 MHz on
@@ -1094,6 +1128,7 @@ RETRO_API bool retro_load_game_special(unsigned game_type, const struct retro_ga
 /* Unloads a currently loaded game. */
 RETRO_API void retro_unload_game(void)
 {
+	dc_primed = 0;
 	free(media.dir);
 	free(media.name);
 	free(media.extension);
