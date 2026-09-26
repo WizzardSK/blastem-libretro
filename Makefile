@@ -179,8 +179,11 @@ LDFLAGS+= -pthread
 endif
 endif #libblastem.so
 
+#iOS and tvOS have neither framework, and the libretro core needs neither.
 ifeq ($(OS),Darwin)
+ifndef APPLE_EMBEDDED
 LDFLAGS+= -framework OpenGL -framework AppKit
+endif
 endif
 
 endif #PORTABLE

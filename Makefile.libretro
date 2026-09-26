@@ -33,6 +33,29 @@ endif
 	CORE_ARGS := NEW_CORE=1
 	target = libblastem.so
 	libname = blastem_libretro_android.so
+else ifneq (,$(filter ios-arm64 tvos-arm64,$(platform)))
+#iOS and tvOS, built the way libretro-infrastructure's ios-arm64 and
+#tvos-arm64 jobs drive it: plain make with the host clang on an Apple Silicon
+#runner. The compiler is pointed at the device SDK here, as neither template
+#does it. Code signing forbids writable executable memory on both, so the
+#generated 68K/Z80 cores are the only ones there are - the same ones every
+#other arm64 build takes. 12.0 is the lowest deployment target whose binaries
+#the templates' vtool check accepts as IOS/TVOS.
+	OS :=Darwin
+	ABI := aarch64
+ifeq ($(platform),ios-arm64)
+	APPLE_SDK := iphoneos
+	APPLE_TARGET := arm64-apple-ios12.0
+	target = libblastem.dylib
+	libname = blastem_libretro_ios.dylib
+else
+	APPLE_SDK := appletvos
+	APPLE_TARGET := arm64-apple-tvos12.0
+	target = libblastem.dylib
+	libname = blastem_libretro_tvos.dylib
+endif
+	CC := $(shell xcrun --sdk $(APPLE_SDK) -f clang) -target $(APPLE_TARGET) -isysroot $(shell xcrun --sdk $(APPLE_SDK) --show-sdk-path)
+	CORE_ARGS := APPLE_EMBEDDED=1
 else ifeq ($(MSYSTEM),MINGW64)
 	platform = win
 	OS :=Windows
@@ -125,7 +148,7 @@ ifneq (,$(or $(findstring webos,$(CROSS_COMPILE)),$(findstring starfish,$(CROSS_
 endif
 
 core: $(OBJ)
-	$(MAKE) $(target) OS=$(OS) CC=$(CC) CPU=$(ABI) LIBRETRO=$(LIBRETRO) $(CORE_ARGS)
+	$(MAKE) $(target) OS=$(OS) CC="$(CC)" CPU=$(ABI) LIBRETRO=$(LIBRETRO) $(CORE_ARGS)
 	cp -v $(target) $(libname)
 
 install: $(libname)
