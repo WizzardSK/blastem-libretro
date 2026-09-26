@@ -101,8 +101,15 @@ else ifneq (,$(findstring i386,$(CC_MACHINE)))
 	ABI := i686
 else ifneq (,$(findstring x86_64,$(CC_MACHINE)))
 	ABI := x86_64
+else ifneq (,$(CC_MACHINE))
+#Anything else the compiler names - riscv64, ppc64le, loongarch64 - is its own
+#CPU, which the main Makefile takes to mean the generated cores. Falling back
+#to x86_64 here is what put -m64 on a RISC-V build (issue #43).
+	ABI := $(firstword $(subst -, ,$(CC_MACHINE)))
 else ifneq (,$(filter aarch64 arm64,$(UNAMEM)))
 	ABI := aarch64
+else ifneq (,$(UNAMEM))
+	ABI := $(UNAMEM)
 else
 	ABI := x86_64
 endif
