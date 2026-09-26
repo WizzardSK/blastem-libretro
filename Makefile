@@ -411,8 +411,21 @@ $(LIBOBJDIR) :
 	mkdir -p $(LIBOBJDIR)/libchdr
 	mkdir -p $(LIBOBJDIR)/lzma
 
-libblastem.$(SO) : $(LIBOBJS:%.o=$(LIBOBJDIR)/%.o)
-	$(CC) -shared -fPIC -o $@ $^ $(LDFLAGS)
+#Only the libretro API leaves the library. Without this every function in
+#blastem was exported, and a frontend that already had one of the same name
+#loaded - debug_message from Samba's libsmbconf is the one issues #15 and #36
+#ran into - got its own called from inside the core, which crashed on the first
+#ROM. -Bsymbolic makes the core's calls bind to its own functions as well.
+#Windows only exports what is marked dllexport, and macOS binds calls to the
+#library they were linked against, so neither needs it.
+ifneq ($(OS),Windows)
+ifneq ($(OS),Darwin)
+LIBLDFLAGS:=-Wl,--version-script=link.T -Wl,-Bsymbolic
+endif
+endif
+
+libblastem.$(SO) : $(LIBOBJS:%.o=$(LIBOBJDIR)/%.o) link.T
+	$(CC) -shared -fPIC -o $@ $(filter %.o,$^) $(LDFLAGS) $(LIBLDFLAGS)
 
 blastem$(EXE) : $(MAINOBJS:%.o=$(OBJDIR)/%.o)
 	$(CC) -o $@ $^ $(LDFLAGS) $(PROFFLAGS)
